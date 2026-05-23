@@ -21,7 +21,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { InterviewAnswers } from "../types";
 // @ts-ignore
-import monetBg from "../assets/images/monet_cliff_horizon_1779562138549.png";
+import monetBg from "../assets/images/monet_cliff_horizon_1779562138549.webp";
 
 interface InterviewFormProps {
   onSuccess: (answers: InterviewAnswers) => void;
@@ -265,7 +265,7 @@ export default function InterviewForm({ onSuccess, isLoading }: InterviewFormPro
           referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full object-cover opacity-80"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#fcfbf9]/95 via-white/10 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#fcfbf9]/95 via-[#fcfbf9]/40 to-transparent" />
         
         <div className="relative z-10 max-w-xl">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#fffaec] border border-orange-200/50 rounded-full text-[10px] font-mono text-amber-800 mb-2.5 tracking-wider uppercase font-semibold shadow-sm select-none">
@@ -273,11 +273,11 @@ export default function InterviewForm({ onSuccess, isLoading }: InterviewFormPro
             <span>Onboarding Map</span>
           </div>
 
-          <h1 className="text-xl sm:text-2xl font-display font-semibold text-emerald-950 tracking-tight leading-tight">
+          <h1 className="text-xl sm:text-2xl font-display font-semibold text-emerald-950 tracking-tight leading-tight drop-shadow-md">
             Try real things. <br />
             <span className="text-emerald-700 font-sans font-bold">Discover what you care about.</span>
           </h1>
-          <p className="text-xs text-slate-700 mt-1 font-sans leading-relaxed">
+          <p className="text-xs text-slate-800 mt-1 font-sans leading-relaxed font-medium drop-shadow-sm">
             No dry worksheets or generic multiple-choice dashboards. Tell us about a real problem you care about, and we will tailor custom web opportunities for you.
           </p>
         </div>
@@ -545,7 +545,7 @@ export default function InterviewForm({ onSuccess, isLoading }: InterviewFormPro
                           return (
                             <button
                               key={opt}
-                              type="button; button"
+                              type="button"
                               onClick={() => setSolveApproach(opt)}
                               className={`text-[11px] font-sans p-3 rounded-xl border leading-snug transition-all duration-200 active:scale-95 text-center flex items-center justify-center font-bold min-h-[48px] cursor-pointer ${
                                 isSelected

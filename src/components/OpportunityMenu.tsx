@@ -67,19 +67,15 @@ export default function OpportunityMenu({
       </div>
 
       {/* 3. Personalized Adventures Menu Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-8 max-w-5xl mx-auto">
         {opportunities.map((opp, idx) => {
           const isComingSoon = opp.type === "coming-soon";
           const isLoading = opp.status === "planned" || opp.status === "building";
 
           if (isLoading) {
-            const loadingText = 
-              opp.type === "oss-doc-pr" ? "✍️ Drafting docs PR..." :
-              opp.type === "publish-essay" ? "📖 Drafting your essay..." :
-              opp.type === "eco-campaign" ? "🌸 Customizing campaign..." :
-              opp.type === "code-widget" ? "⚡ Configuring widget..." :
-              opp.type === "wildlife-map" ? "🗺️ Drawing map layers..." :
-              "✨ Planning session...";
+            const loadingText = opp.label
+              ? `✨ Preparing your ${opp.label}...`
+              : "✨ Planning your project...";
 
             return (
               <motion.div
@@ -100,7 +96,7 @@ export default function OpportunityMenu({
                       <div className="w-16 h-5 rounded-lg bg-slate-200" />
                     </div>
                     <div className="mb-3">
-                      <h3 className="text-[14px] font-sans font-extrabold text-emerald-950/70 line-clamp-2 leading-tight">
+                      <h3 className="text-[14px] font-sans font-extrabold text-emerald-950/70 leading-tight">
                         {opp.title}
                       </h3>
                       <span className="text-[9px] font-mono text-slate-400 block mt-1 truncate">
@@ -125,50 +121,44 @@ export default function OpportunityMenu({
             );
           }
           
-          // Style assignments based on kind of action for pleasant light aesthetic
-
-          let badgeText = "Document PR";
+          // Visual theming by type (colors + icon only — text label comes from opp.label)
           let badgeColor = "bg-teal-50 text-teal-800 border-teal-200/50";
           let borderColor = "border-orange-100 hover:border-emerald-300/60";
           let focusColor = "bg-teal-400/45";
           let visualIcon = <Code className="w-3.5 h-3.5 text-teal-700" />;
 
           if (opp.type === "publish-essay") {
-            badgeText = "Stories & Blogs";
             badgeColor = "bg-[#fffbeb] text-amber-800 border-amber-200/50";
             borderColor = "border-orange-100 hover:border-amber-350/60";
             focusColor = "bg-amber-400/40";
             visualIcon = <Notebook className="w-3.5 h-3.5 text-amber-700" />;
           } else if (opp.type === "eco-campaign") {
-            badgeText = "Community Action";
             badgeColor = "bg-emerald-50 text-emerald-800 border-emerald-200/50";
             borderColor = "border-orange-100 hover:border-emerald-300/60";
             focusColor = "bg-emerald-400/40";
             visualIcon = <Sparkles className="w-3.5 h-3.5 text-emerald-700" />;
           } else if (opp.type === "code-widget") {
-            badgeText = "Interactive Calculators";
             badgeColor = "bg-blue-50 text-blue-800 border-blue-200/50";
             borderColor = "border-orange-100 hover:border-blue-300/60";
             focusColor = "bg-blue-400/40";
             visualIcon = <FileCode className="w-3.5 h-3.5 text-blue-700" />;
           } else if (opp.type === "wildlife-map") {
-            badgeText = "Ecology Maps";
             badgeColor = "bg-purple-50 text-purple-800 border-purple-200/50";
             borderColor = "border-orange-100 hover:border-purple-300/60";
             focusColor = "bg-purple-400/40";
             visualIcon = <Map className="w-3.5 h-3.5 text-purple-700" />;
           } else if (opp.type === "teach-skill") {
-            badgeText = "Guide & Presentation";
             badgeColor = "bg-rose-50 text-rose-800 border-rose-200/50";
             borderColor = "border-orange-100 hover:border-rose-300/60";
             focusColor = "bg-rose-400/45";
             visualIcon = <Sparkles className="w-3.5 h-3.5 text-rose-700" />;
           } else if (isComingSoon) {
-            badgeText = "Level 2 Options";
             badgeColor = "bg-slate-100 text-slate-500 border border-slate-200";
             borderColor = "border-orange-200/40 opacity-60";
             focusColor = "bg-slate-300";
           }
+
+          const badgeText = isComingSoon ? "Coming Soon" : (opp.label || "Project");
 
           return (
             <motion.div
@@ -176,47 +166,44 @@ export default function OpportunityMenu({
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3, delay: idx * 0.05 }}
-              className={`flex flex-col h-full bg-white/85 border ${borderColor} rounded-2xl overflow-hidden shadow-md backdrop-blur-md relative group transition-all duration-300`}
+              className={`flex flex-col h-full bg-[#fcfbf9] border border-[#e0ddd0]/60 rounded-3xl overflow-hidden shadow-sm hover:shadow-xl hover:-translate-y-1 hover:border-emerald-300 backdrop-blur-md relative group transition-all duration-500`}
             >
               {/* Top accent line */}
-              <div className={`h-1.5 w-full ${focusColor}`} />
+              <div className={`absolute top-0 left-0 h-1.5 w-full ${focusColor} z-20`} />
 
               {/* Graphical Card Image */}
               {opp.imageUrl && (
-                <div className="relative aspect-[16/10] w-full bg-slate-100 overflow-hidden border-b border-orange-100/30">
+                <div className="relative h-48 w-full overflow-hidden">
                   <img
                     src={opp.imageUrl}
                     alt={opp.title}
                     referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover opacity-85 group-hover:scale-[1.03] transition-transform duration-500 ease-out"
+                    className="absolute inset-0 w-full h-full object-cover opacity-95 group-hover:scale-105 transition-transform duration-1000 mix-blend-multiply [mask-image:linear-gradient(to_bottom,black_30%,transparent_100%)]"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/95 via-transparent to-transparent" />
+                  <div className="absolute top-5 left-5 px-2.5 py-1.5 rounded-xl bg-[#f7f5ee]/80 backdrop-blur-md shadow-sm border border-[#e0ddd0]/50 z-10 group-hover:bg-white transition-colors duration-300 flex items-center gap-2">
+                    {visualIcon}
+                    <span className="text-[10px] font-mono font-bold tracking-wider text-slate-700 uppercase">{badgeText}</span>
+                  </div>
+                  <div className="absolute top-5 right-5 z-10 opacity-0 group-hover:opacity-100 transition-all duration-500 translate-y-1 group-hover:translate-y-0">
+                    <span className="text-emerald-900 font-sans text-[11px] font-bold flex items-center gap-1 bg-white/40 px-2.5 py-1 rounded-lg border border-white/20 shadow-sm backdrop-blur-xl">
+                      <Clock className="w-3 h-3 text-amber-600" />
+                      {opp.estimatedMinutes}m
+                    </span>
+                  </div>
                 </div>
               )}
 
               {/* Content Body */}
-              <div className="p-5 flex-1 flex flex-col justify-between">
+              <div className={`p-6 ${opp.imageUrl ? 'pt-0 -mt-2' : 'pt-6'} flex-1 flex flex-col justify-between relative z-10`}>
                 <div>
-                  
-                  {/* Category and Estimated time */}
-                  <div className="flex items-center justify-between mb-3 text-[11px] font-mono">
-                    <span className={`px-2.5 py-1 rounded-lg font-bold tracking-wider flex items-center gap-1.5 ${badgeColor}`}>
-                      {visualIcon}
-                      <span>{badgeText}</span>
-                    </span>
-                    <span className="text-emerald-900 font-sans font-bold flex items-center gap-1 bg-[#fefdf9] px-2 py-1 rounded-lg border border-orange-100/60 shadow-sm">
-                      <Clock className="w-3.5 h-3.5 text-amber-500" />
-                      {opp.estimatedMinutes} mins
-                    </span>
-                  </div>
 
                   {/* Title */}
                   <div className="mb-3">
-                    <h3 className="text-[14px] font-sans font-extrabold text-emerald-950 group-hover:text-emerald-700 transition duration-200 line-clamp-2 leading-tight">
+                    <h3 className="text-[14px] font-sans font-extrabold text-emerald-950 group-hover:text-emerald-700 transition duration-200 leading-tight">
                       {opp.title}
                     </h3>
                     <span className="text-[9px] font-mono text-emerald-800/60 block mt-1 truncate">
-                      Source Material: {opp.target}
+                      → {opp.target}
                     </span>
                   </div>
 
@@ -245,18 +232,22 @@ export default function OpportunityMenu({
               </div>
 
               {/* Interactive buttons with 44px hit-box */}
-              <div className="p-4 bg-slate-50/45 border-t border-orange-100/30">
+              <div className="p-6 pt-0">
                 {isComingSoon ? (
-                  <span className="text-xs font-mono text-slate-400 block text-center py-2 font-medium">
-                    🔒 Locks on completion
-                  </span>
+                  <div className="w-full h-12 bg-slate-50 border border-slate-200/50 rounded-xl flex items-center justify-center">
+                    <span className="text-xs font-mono text-slate-400 font-medium">
+                      🔒 Locks on completion
+                    </span>
+                  </div>
                 ) : (
                   <button
                     onClick={() => onSelect(opp.id)}
                     id={`deploy-agent-${opp.id}`}
-                    className="w-full h-11 text-xs font-mono font-bold tracking-wider uppercase rounded-xl text-white bg-emerald-500 hover:bg-emerald-600 border border-transparent shadow shadow-emerald-500/20 hover:scale-[1.01] active:scale-[0.99] transition-all duration-300 cursor-pointer"
+                    className="group/btn relative overflow-hidden w-full h-12 text-[11px] font-mono font-bold tracking-wider uppercase rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 border border-transparent shadow-md hover:shadow-lg shadow-emerald-900/20 hover:-translate-y-0.5 active:translate-y-0.5 transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
                   >
-                    ✨ Start This Adventure!
+                    {/* Satisfying shine sweep effect on hover */}
+                    <div className="absolute inset-0 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-[1.5s] ease-in-out bg-gradient-to-r from-transparent via-white/20 to-transparent skew-x-12" />
+                    <span className="relative z-10">✨ View Plan</span>
                   </button>
                 )}
               </div>

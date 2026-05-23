@@ -1,11 +1,12 @@
 import { Opportunity, ActiveProject } from "../types";
 import { Clock, Compass, ArrowRight, Shield, Award, Terminal, Code, Sparkles, FileText, CheckCircle2 } from "lucide-react";
 import { motion } from "motion/react";
+import { useState } from "react";
 
 interface BlueprintPlanProps {
   opportunity: Opportunity;
   project: ActiveProject;
-  onConfirmStart: () => void;
+  onConfirmStart: (selectedSteps: any[]) => void;
   onBack: () => void;
 }
 
@@ -15,56 +16,17 @@ export default function BlueprintPlan({
   onConfirmStart,
   onBack,
 }: BlueprintPlanProps) {
+  const [selectedIndices, setSelectedIndices] = useState<number[]>(
+    project.steps.map((_, i) => i)
+  );
   
-  // Custom text summary explaining exactly what the student will develop
-  const getDeliverableSummary = () => {
-    switch (opportunity.type) {
-      case "oss-doc-pr":
-        return {
-          header: "Unified Git Documentation Patch",
-          output: "A physical contribution draft and validated code diff added to iNaturalist's actual open-source database. Once approved, this adds crucial soil and microplastic hazard telemetry definitions.",
-          skills: "Markdown structures, documentation pipelines, Git branches, and fork schemas."
-        };
-      case "publish-essay":
-        return {
-          header: "Signed Substack Guest Editorial Post",
-          output: "A fully styled 200+ word ecological opinion newsletter piece, complete with proper headers and local student call-to-actions, published live under your signature.",
-          skills: "Public outreach, persuasive essay writing, digital blogging structures, and citations."
-        };
-      case "eco-campaign":
-        return {
-          header: "Formal Citizens Petition & Council Resolution Packet",
-          output: "An official public representational letter, with specific sand sieving kits procurement proposals, direct-dispatched to current county environmental planners.",
-          skills: "Civic leadership, lobbying structures, local government handshakes, and policy petitioning."
-        };
-      case "code-widget":
-        return {
-          header: "Interactive React Slider Decomposition Tracker",
-          output: "A fully reactive web application showing exact material decomposition sliders and microplastic breakdown calculators, deployed directly on a live GitHub Pages link.",
-          skills: "React functional states, JSX layouts, dynamic slider math formulas, and cloud build compilation."
-        };
-      case "wildlife-map":
-        return {
-          header: "Atlantic Shore Sighting KML Map Layer",
-          output: "A GIS coordinate dataset mapping marine turtle nesting temperature points and coastal plastic counts, ready to overlay directly on public Google Maps layers.",
-          skills: "GIS boundary nodes, XML coordinate hierarchies, spatial geography, and map marker bindings."
-        };
-      case "teach-skill":
-        return {
-          header: "Official Impeccable Mobile Touch-Target Safety Guidelines",
-          output: "A professional, open-source documentation module formulated to instruct AI agents on responsive padding, 44px min-height targets, and desktop cursor actions.",
-          skills: "Technical guides, system instruction design, Tailwind layout structures, and Markdown prose."
-        };
-      default:
-        return {
-          header: "Custom Sandbox Project Artifact",
-          output: "A functional ecosystem contribution matching your interest spark guidelines.",
-          skills: "Problem solving, micro-project management, and digital agency."
-        };
-    }
-  };
+  const typeLabel = opportunity.label || opportunity.type;
 
-  const deliverable = getDeliverableSummary();
+  const deliverable = {
+    header: opportunity.impact || opportunity.title,
+    output: opportunity.summary,
+    skills: opportunity.complexity || "",
+  };
 
   return (
     <div className="max-w-6xl mx-auto animate-fadeIn" id="blueprint-plan">
@@ -73,7 +35,7 @@ export default function BlueprintPlan({
       <div className="mb-6 flex items-center justify-between">
         <button
           onClick={onBack}
-          className="text-emerald-800 hover:text-emerald-950 font-mono text-xs uppercase tracking-widest flex items-center gap-2 transition duration-300 active:scale-95 font-bold cursor-pointer"
+          className="text-emerald-800 hover:text-emerald-950 font-mono text-xs uppercase tracking-widest flex items-center gap-2 transition duration-300 active:scale-95 font-bold cursor-pointer min-h-[44px] py-2 px-1"
         >
           &larr; Choose Different Opportunity
         </button>
@@ -100,7 +62,7 @@ export default function BlueprintPlan({
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-transparent to-transparent" />
                 <span className="absolute bottom-4 left-4 bg-emerald-100 text-emerald-800 font-mono text-[9px] px-2.5 py-1 rounded-lg uppercase tracking-wider font-bold shadow-sm border border-emerald-200/50">
-                  TYPE: {opportunity.type.replace("-", " ")}
+                  {typeLabel}
                 </span>
               </div>
             )}
@@ -111,7 +73,7 @@ export default function BlueprintPlan({
             <h3 className="text-xl font-display font-medium text-emerald-950 mb-3 leading-tight">
               {deliverable.header}
             </h3>
-            <p className="text-xs text-slate-700 leading-relaxed font-sans mb-6">
+            <p className="text-sm text-slate-700 leading-relaxed font-sans mb-6">
               {deliverable.output}
             </p>
           </div>
@@ -171,29 +133,46 @@ export default function BlueprintPlan({
                   
                   {/* Vertical connector line */}
                   {i < project.steps.length - 1 && (
-                    <div className="absolute left-[18px] top-8 bottom-0 w-0.5 bg-orange-100" />
+                    <div className="absolute left-[34px] top-8 bottom-0 w-0.5 bg-orange-100" />
                   )}
 
-                  {/* Bullet badge indicator */}
-                  <div className="w-8 h-8 rounded-full bg-[#fefdf9] border border-orange-100 text-[11px] font-mono font-bold flex items-center justify-center text-slate-500 shrink-0 group-hover:border-emerald-400 group-hover:text-emerald-600 transition-all duration-300 hover:scale-105 shadow-sm">
-                    {i + 1}
+                  {/* Bullet badge indicator & checkbox */}
+                  <div className="flex items-center gap-3.5 shrink-0 relative z-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedIndices.includes(i)}
+                      onChange={() => {
+                        if (selectedIndices.includes(i)) {
+                          // Prevent unchecking everything (must have at least 1 step)
+                          if (selectedIndices.length > 1) {
+                            setSelectedIndices(selectedIndices.filter((idx) => idx !== i));
+                          }
+                        } else {
+                          setSelectedIndices([...selectedIndices, i].sort((a, b) => a - b));
+                        }
+                      }}
+                      className="w-4 h-4 rounded accent-emerald-600 focus:ring-emerald-500 border-slate-300 transition duration-150 cursor-pointer shadow-sm"
+                    />
+                    <div className={`w-8 h-8 rounded-full border text-[11px] font-mono font-bold flex items-center justify-center transition-all duration-300 shadow-sm ${
+                      selectedIndices.includes(i)
+                        ? "bg-emerald-50 border-emerald-300 text-emerald-700 font-extrabold scale-105"
+                        : "bg-slate-100 border-slate-200 text-slate-400 opacity-60"
+                    }`}>
+                      {i + 1}
+                    </div>
                   </div>
 
                   {/* Step descriptions */}
-                  <div>
-                    <h4 className="text-xs font-mono font-bold text-emerald-950 tracking-wider uppercase group-hover:text-emerald-700 transition duration-200">
+                  <div className={`transition-all duration-200 ${
+                    selectedIndices.includes(i) ? "" : "opacity-45 line-through decoration-slate-400/80 decoration-1"
+                  }`}>
+                    <h4 className="text-sm font-sans font-bold text-emerald-950 group-hover:text-emerald-700 transition duration-200">
                       {st.title}
                     </h4>
-                    <p className="text-[11.5px] text-slate-600 leading-relaxed font-sans mt-1">
+                    <p className="text-xs text-slate-600 leading-relaxed font-sans mt-1.5">
                       {st.description}
                     </p>
                     
-                    {/* Visual action markers based on kind */}
-                    <div className="flex gap-3 mt-2 text-[10px] font-mono text-emerald-800/60 select-none">
-                      <span>Action Type: <strong className="text-emerald-900 uppercase font-bold">{st.actionType}</strong></span>
-                      <span>&bull;</span>
-                      <span>Target: <strong className="text-emerald-900 font-bold">{st.actionType === "publish" ? "Live Web Page" : "Virtual Sandbox"}</strong></span>
-                    </div>
                   </div>
 
                 </div>
@@ -208,12 +187,12 @@ export default function BlueprintPlan({
                 READY TO START?
               </span>
               <p className="text-xs text-slate-500 font-sans mt-1">
-                We will set up everything for you in private, sandbox files.
+                We will plan and set up only your {selectedIndices.length} selected steps in the sandbox files.
               </p>
             </div>
 
             <button
-              onClick={onConfirmStart}
+              onClick={() => onConfirmStart(project.steps.filter((_, i) => selectedIndices.includes(i)))}
               className="w-full sm:w-auto h-12 inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white font-sans font-bold text-xs px-6 rounded-xl uppercase tracking-widest transition-all duration-300 hover:scale-[1.02] hover:shadow-lg active:scale-[0.99] cursor-pointer"
             >
               <span>Let's Start Building!</span>
