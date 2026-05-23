@@ -1,0 +1,6 @@
+{
+  "name": "Atlas",
+  "description": "Don't predict, do. Live-mines specific, real-world opportunities matching your interests, drafts plans, and ships artifacts with plan-then-approve gates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
