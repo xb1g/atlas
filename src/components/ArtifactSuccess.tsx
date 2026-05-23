@@ -1,4 +1,4 @@
-import { Sparkles, ArrowUpRight, CheckCircle2, Award, Clipboard, Copy, Search, CornerDownRight, RefreshCw, BadgeCheck } from "lucide-react";
+import { Sparkles, ArrowUpRight, CheckCircle2, Award, Clipboard, Copy, Search, CornerDownRight, RefreshCw, BadgeCheck, BookOpen } from "lucide-react";
 import { useState } from "react";
 import { motion } from "motion/react";
 import { Opportunity, InterviewAnswers } from "../types";
@@ -7,12 +7,14 @@ interface ArtifactSuccessProps {
   opportunity: Opportunity;
   answers: InterviewAnswers;
   onRestart: () => void;
+  onReflect?: () => void;
 }
 
 export default function ArtifactSuccess({
   opportunity,
   answers,
   onRestart,
+  onReflect,
 }: ArtifactSuccessProps) {
   const [copied, setCopied] = useState(false);
 
@@ -124,15 +126,26 @@ export default function ArtifactSuccess({
         </div>
       </div>
 
-      {/* Try another one */}
-      <button
-        onClick={onRestart}
-        id="btn-restart"
-        className="h-12 inline-flex items-center gap-2 bg-white hover:bg-slate-50 border border-orange-200/40 text-emerald-800 font-sans font-bold text-xs px-6 rounded-xl transition-all duration-300 uppercase tracking-widest cursor-pointer hover:scale-[1.01] active:scale-99 shadow-sm"
-      >
-        <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
-        <span>Try Another Adventure!</span>
-      </button>
+      {/* Actions */}
+      <div className="flex flex-col sm:flex-row gap-3 justify-center">
+        {onReflect && (
+          <button
+            onClick={onReflect}
+            className="h-12 inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-sans font-bold text-xs px-8 rounded-xl transition-all duration-300 uppercase tracking-widest cursor-pointer hover:-translate-y-0.5 active:translate-y-0 shadow-lg"
+          >
+            <BookOpen className="w-3.5 h-3.5" />
+            <span>What Did I Learn? →</span>
+          </button>
+        )}
+        <button
+          onClick={onRestart}
+          id="btn-restart"
+          className="h-12 inline-flex items-center gap-2 bg-white hover:bg-slate-50 border border-orange-200/40 text-emerald-800 font-sans font-bold text-xs px-6 rounded-xl transition-all duration-300 uppercase tracking-widest cursor-pointer hover:scale-[1.01] active:scale-99 shadow-sm"
+        >
+          <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
+          <span>Try Another Adventure</span>
+        </button>
+      </div>
 
     </div>
   );

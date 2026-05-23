@@ -1,5 +1,5 @@
 import { Opportunity, ActiveProject } from "../types";
-import { Clock, Compass, ArrowRight, Shield, Award, Terminal, Code, Sparkles, FileText, CheckCircle2 } from "lucide-react";
+import { Clock, Compass, ArrowRight, Shield, Award, Terminal, Code, Sparkles, FileText, CheckCircle2, ChevronLeft } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
 
@@ -35,9 +35,10 @@ export default function BlueprintPlan({
       <div className="mb-6 flex items-center justify-between">
         <button
           onClick={onBack}
-          className="text-emerald-800 hover:text-emerald-950 font-mono text-xs uppercase tracking-widest flex items-center gap-2 transition duration-300 active:scale-95 font-bold cursor-pointer min-h-[44px] py-2 px-1"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/70 border border-emerald-200/50 text-emerald-800 hover:bg-white hover:border-emerald-300 text-xs font-mono font-bold uppercase tracking-wider shadow-sm transition-all active:scale-95 cursor-pointer"
         >
-          &larr; Choose Different Opportunity
+          <ChevronLeft className="w-3.5 h-3.5" />
+          Adventures
         </button>
         <span className="text-[10px] font-mono text-emerald-800 bg-emerald-100/60 px-3 py-1 rounded-lg border border-emerald-200/50 uppercase tracking-widest font-bold shadow-sm">
           YOUR ADVENTURE PLAN

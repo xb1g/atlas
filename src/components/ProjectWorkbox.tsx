@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
-import { 
-  Terminal, CheckCircle2, Circle, Play, ArrowRight, ShieldAlert, 
-  FileText, Check, Copy, Compass, Plus, Trash2, Edit3, MessageSquare, 
-  Award, Star, ChevronRight, BookOpen, Send, Sparkles, X, Clock, HelpCircle
+import {
+  Terminal, CheckCircle2, Circle, Play, ArrowRight, ShieldAlert,
+  FileText, Check, Copy, Compass, Plus, Trash2, Edit3, MessageSquare,
+  Award, Star, ChevronRight, ChevronLeft, BookOpen, Send, Sparkles, X, Clock, HelpCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { ActiveProject, ProjectStep, Opportunity } from "../types";
@@ -35,11 +35,13 @@ export default function ProjectWorkbox({
   const [copied, setCopied] = useState(false);
 
   // Inspector and custom task creator states
-  const [selectedTask, setSelectedTask] = useState<ProjectStep | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [isAddingTask, setIsAddingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDesc, setNewTaskDesc] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<"low" | "medium" | "high">("medium");
+  const [tutorInput, setTutorInput] = useState("");
+  const [isTutorTyping, setIsTutorTyping] = useState(false);
 
   // AI Co-Founder Chat states
   const [chatMessages, setChatMessages] = useState<{ sender: "agent" | "student"; text: string }[]>([
@@ -56,11 +58,25 @@ export default function ProjectWorkbox({
   const [confetti, setConfetti] = useState<{ id: number; x: number; y: number; color: string; size: number; delay: number }[]>([]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const tutorEndRef = useRef<HTMLDivElement>(null);
+  const selectedTask = selectedTaskId
+    ? project.steps.find((step) => step.id === selectedTaskId) ?? null
+    : null;
 
   // Auto-scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, isAgentTyping]);
+
+  useEffect(() => {
+    tutorEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [selectedTask?.tutorMessages, isTutorTyping]);
+
+  useEffect(() => {
+    if (selectedTaskId && !project.steps.some((step) => step.id === selectedTaskId)) {
+      setSelectedTaskId(null);
+    }
+  }, [project.steps, selectedTaskId]);
 
   // Find physical active step shown in Terminal
   const isCompletedProject = currentStepIndex >= project.steps.length;
@@ -237,7 +253,8 @@ export default function ProjectWorkbox({
       actionType: "draft",
       custom: true,
       priority: newTaskPriority,
-      notes: ""
+      notes: "",
+      tutorMessages: []
     };
 
     const updatedSteps = [...project.steps, newStep];
@@ -254,24 +271,56 @@ export default function ProjectWorkbox({
   // Delete custom sprint task
   const handleDeleteCustomTask = (id: string) => {
     const updatedSteps = project.steps.filter(s => s.id !== id);
-    syncStepsToDb(updatedSteps);
-    setSelectedTask(null);
+    onUpdateProject?.({
+      ...project,
+      steps: updatedSteps
+    });
+    setSelectedTaskId(null);
     playNotificationChime();
+
+    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+    fetch("/api/project/delete-task", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-id": sessionId
+      },
+      body: JSON.stringify({ taskId: id })
+    })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.project) onUpdateProject?.(data.project);
+      })
+      .catch((e) => console.error("Failed to delete custom task in Firebase", e));
   };
 
   // Modify attributes of a task (like notes diary, priority)
   const handleUpdateTaskDetails = (id: string, updates: Partial<ProjectStep>) => {
     const updatedSteps = project.steps.map(s => {
       if (s.id === id) {
-        const updated = { ...s, ...updates };
-        if (selectedTask?.id === id) {
-          setSelectedTask(updated);
-        }
-        return updated;
+        return { ...s, ...updates };
       }
       return s;
     });
-    syncStepsToDb(updatedSteps);
+    onUpdateProject?.({
+      ...project,
+      steps: updatedSteps
+    });
+
+    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+    fetch("/api/project/update-task", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-id": sessionId
+      },
+      body: JSON.stringify({ taskId: id, updates })
+    })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.project) onUpdateProject?.(data.project);
+      })
+      .catch((e) => console.error("Failed to patch task in Firebase", e));
   };
 
   // Toggle status of task in Kanban Board columns
@@ -287,7 +336,26 @@ export default function ProjectWorkbox({
       return s;
     });
 
-    syncStepsToDb(updatedSteps);
+    onUpdateProject?.({
+      ...project,
+      steps: updatedSteps
+    });
+
+    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+    fetch("/api/project/update-task", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-id": sessionId
+      },
+      body: JSON.stringify({ taskId: id, updates: { status: newStatus } })
+    })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.project) onUpdateProject?.(data.project);
+      })
+      .catch((e) => console.error("Failed to move task in Firebase", e));
+
     if (playedReward) {
       triggerConfetti();
     } else {
@@ -343,6 +411,67 @@ export default function ProjectWorkbox({
     }
   };
 
+  const handleSendTutorMessage = async (text?: string) => {
+    const activeTask = selectedTask;
+    const studentMessage = (text ?? tutorInput).trim();
+    if (!activeTask?.id || !studentMessage || isTutorTyping) return;
+
+    setTutorInput("");
+    setIsTutorTyping(true);
+
+    const optimisticMessages = [
+      ...(activeTask.tutorMessages ?? []),
+      { sender: "student" as const, text: studentMessage }
+    ];
+    onUpdateProject?.({
+      ...project,
+      steps: project.steps.map((step) =>
+        step.id === activeTask.id ? { ...step, tutorMessages: optimisticMessages } : step
+      )
+    });
+
+    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+    try {
+      const res = await fetch("/api/project/task-tutor", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-session-id": sessionId
+        },
+        body: JSON.stringify({
+          taskId: activeTask.id,
+          message: studentMessage
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Task tutor request failed");
+      }
+
+      if (data.project) {
+        onUpdateProject?.(data.project);
+      }
+    } catch (err) {
+      console.error("Task tutor chat failed", err);
+      const fallbackMessages = [
+        ...optimisticMessages,
+        {
+          sender: "agent" as const,
+          text: "I could not save that tutoring turn yet. Your question is still here, so try sending it again in a moment."
+        }
+      ];
+      onUpdateProject?.({
+        ...project,
+        steps: project.steps.map((step) =>
+          step.id === activeTask.id ? { ...step, tutorMessages: fallbackMessages } : step
+        )
+      });
+    } finally {
+      setIsTutorTyping(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto animate-fadeIn relative" id="project-workbox">
       
@@ -367,9 +496,10 @@ export default function ProjectWorkbox({
         <div>
           <button
             onClick={onBack}
-            className="text-emerald-800 hover:text-emerald-950 font-mono text-xs font-bold uppercase mb-2.5 inline-flex items-center gap-1.5 tracking-widest transition duration-200 active:scale-95 bg-transparent border-none cursor-pointer py-1 px-1"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/70 border border-emerald-200/50 text-emerald-800 hover:bg-white hover:border-emerald-300 text-xs font-mono font-bold uppercase tracking-wider shadow-sm transition-all active:scale-95 cursor-pointer mb-2.5"
           >
-            &larr; Back to Adventures
+            <ChevronLeft className="w-3.5 h-3.5" />
+            Adventures
           </button>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-display font-medium text-emerald-950 tracking-tight">
@@ -538,7 +668,7 @@ export default function ProjectWorkbox({
                         <KanbanCard 
                           key={step.id} 
                           step={step} 
-                          onInspect={setSelectedTask} 
+                          onInspect={setSelectedTaskId} 
                           onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
                         />
                       ))}
@@ -567,7 +697,7 @@ export default function ProjectWorkbox({
                         <KanbanCard 
                           key={step.id} 
                           step={step} 
-                          onInspect={setSelectedTask} 
+                          onInspect={setSelectedTaskId} 
                           onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
                         />
                       ))}
@@ -596,7 +726,7 @@ export default function ProjectWorkbox({
                         <KanbanCard 
                           key={step.id} 
                           step={step} 
-                          onInspect={setSelectedTask} 
+                          onInspect={setSelectedTaskId} 
                           onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
                         />
                       ))}
@@ -1007,146 +1137,247 @@ export default function ProjectWorkbox({
         )}
       </AnimatePresence>
 
-      {/* 6. INSPECT CARD MODAL DIALOG OVERLAY */}
+      {/* 6. TASK SPLIT WORKSPACE DRAWER */}
       <AnimatePresence>
         {selectedTask && (
-          <div className="fixed inset-0 bg-black/35 backdrop-blur-[2px] z-50 flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl border border-orange-100 p-6 max-w-lg w-full shadow-2xl text-left"
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] z-50">
+            <button
+              type="button"
+              aria-label="Close task workspace"
+              className="absolute inset-0 w-full h-full cursor-default"
+              onClick={() => setSelectedTaskId(null)}
+            />
+            <motion.aside
+              initial={{ x: "100%", opacity: 0.98 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0.98 }}
+              transition={{ type: "spring", stiffness: 260, damping: 30 }}
+              className="absolute right-0 top-0 h-full w-full lg:w-[72vw] xl:w-[64vw] bg-[#fffdf9] border-l border-orange-100 shadow-2xl text-left grid grid-cols-1 md:grid-cols-2 overflow-hidden"
             >
-              {/* Modal header */}
-              <div className="flex items-start justify-between border-b border-slate-100 pb-3.5 mb-4 text-left">
-                <div className="flex-1 text-left">
-                  <div className="flex flex-wrap items-center gap-2 mb-1">
+              <button
+                onClick={() => setSelectedTaskId(null)}
+                className="absolute right-4 top-4 z-10 w-10 h-10 bg-white/95 hover:bg-slate-50 border border-slate-200 rounded-full shadow-lg flex items-center justify-center text-slate-500 hover:text-slate-800 cursor-pointer"
+                aria-label="Close task workspace"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <section className="h-full overflow-y-auto custom-scrollbar p-5 sm:p-7 md:border-r border-orange-100/70">
+                <div className="pr-10">
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
                     <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-md border tracking-wider capitalize ${
-                      selectedTask.priority === "high" 
-                        ? "bg-rose-50 border-rose-300 text-rose-700" 
+                      selectedTask.priority === "high"
+                        ? "bg-rose-50 border-rose-300 text-rose-700"
                         : selectedTask.priority === "medium"
                         ? "bg-amber-50 border-amber-300 text-amber-700"
                         : "bg-emerald-50 border-emerald-300 text-emerald-700"
                     }`}>
                       {selectedTask.priority || "medium"} Priority
                     </span>
+                    <span className="text-[9px] font-mono font-bold bg-white border border-slate-200 text-slate-500 px-2 py-0.5 rounded-md capitalize">
+                      {selectedTask.status}
+                    </span>
                     {selectedTask.custom && (
                       <span className="text-[9px] font-mono font-bold bg-[#fbfdfa] border border-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
-                        🛠️ Custom Milestone
+                        Custom Milestone
                       </span>
                     )}
                   </div>
-                  
+
                   {selectedTask.custom ? (
                     <input
                       type="text"
                       value={selectedTask.title}
                       onChange={(e) => handleUpdateTaskDetails(selectedTask.id!, { title: e.target.value })}
-                      className="text-base font-display font-extrabold text-slate-900 border-b border-dashed border-slate-200 hover:border-slate-400 focus:outline-none focus:border-emerald-500 w-full bg-transparent text-left"
+                      className="text-xl font-display font-extrabold text-slate-950 border-b border-dashed border-slate-200 hover:border-slate-400 focus:outline-none focus:border-emerald-500 w-full bg-transparent text-left leading-tight"
                     />
                   ) : (
-                    <h3 className="text-base font-display font-extrabold text-slate-900 leading-tight text-left">
+                    <h3 className="text-xl font-display font-extrabold text-slate-950 leading-tight text-left">
                       {selectedTask.title}
                     </h3>
                   )}
                 </div>
-                <button 
-                  onClick={() => setSelectedTask(null)}
-                  className="w-7 h-7 hover:bg-slate-100 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 cursor-pointer shrink-0"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
 
-              {/* Modal content body */}
-              <div className="space-y-4 font-sans text-xs text-slate-800 text-left">
-                <div className="text-left">
-                  <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider mb-1 font-bold text-left">Description</label>
-                  {selectedTask.custom ? (
+                <div className="mt-6 space-y-5 font-sans text-xs text-slate-800 text-left">
+                  <div className="text-left">
+                    <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider mb-1.5 font-bold text-left">Milestone Brief</label>
+                    {selectedTask.custom ? (
+                      <textarea
+                        value={selectedTask.description}
+                        onChange={(e) => handleUpdateTaskDetails(selectedTask.id!, { description: e.target.value })}
+                        rows={4}
+                        className="w-full p-3 border border-slate-200 rounded-xl text-slate-800 bg-white focus:outline-none focus:border-emerald-500 text-left"
+                      />
+                    ) : (
+                      <p className="text-slate-600 leading-relaxed bg-white border border-slate-100/80 p-4 rounded-2xl text-left shadow-sm">
+                        {selectedTask.description}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="text-left">
+                    <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider mb-1.5 font-bold text-left">Priority</label>
+                    <div className="flex gap-2">
+                      {(["low", "medium", "high"] as const).map((p) => {
+                        const isActive = selectedTask.priority === p;
+                        const activeStyle = {
+                          low: "border-emerald-500 bg-emerald-100/50 text-emerald-800 font-extrabold",
+                          medium: "border-amber-500 bg-amber-100/50 text-amber-800 font-extrabold",
+                          high: "border-rose-500 bg-rose-100/50 text-rose-800 font-extrabold"
+                        };
+                        return (
+                          <button
+                            key={p}
+                            onClick={() => handleUpdateTaskDetails(selectedTask.id!, { priority: p })}
+                            className={`flex-1 h-9 rounded-lg border capitalize transition cursor-pointer font-sans font-medium text-[11px] ${
+                              isActive ? activeStyle[p] : "border-slate-200 text-slate-500 hover:bg-slate-50"
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="text-left">
+                    <div className="flex items-center gap-1 mb-1.5 justify-between">
+                      <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider font-bold flex items-center gap-1 text-left">
+                        <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
+                        Co-Founder Creation Diary
+                      </label>
+                      <span className="text-[8px] font-mono text-slate-400">Autosaved to database</span>
+                    </div>
                     <textarea
-                      value={selectedTask.description}
-                      onChange={(e) => handleUpdateTaskDetails(selectedTask.id!, { description: e.target.value })}
-                      rows={2}
-                      className="w-full p-2 border border-slate-200 rounded-xl text-slate-800 bg-white focus:outline-none focus:border-emerald-500 w-full text-left"
+                      value={selectedTask.notes || ""}
+                      onChange={(e) => handleUpdateTaskDetails(selectedTask.id!, { notes: e.target.value })}
+                      placeholder="Write down what you did on this step, what problems you solved, your feelings, or questions for your AI co-founder..."
+                      rows={10}
+                      className="w-full p-4 bg-white border border-indigo-100 rounded-2xl text-slate-800 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300/30 font-sans leading-relaxed text-xs shadow-inner placeholder-slate-400/90 text-left resize-none"
                     />
-                  ) : (
-                    <p className="text-slate-600 leading-relaxed bg-slate-50 border border-slate-100/50 p-3 rounded-2xl text-left">
-                      {selectedTask.description}
-                    </p>
-                  )}
-                </div>
+                  </div>
 
-                {/* Priority Modifier Toggles inside Inspector */}
-                <div className="text-left">
-                  <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider mb-1 font-bold text-left">Modify Priority Level</label>
-                  <div className="flex gap-2">
-                    {(["low", "medium", "high"] as const).map((p) => {
-                      const isActive = selectedTask.priority === p;
-                      const activeStyle = {
-                        low: "border-emerald-500 bg-emerald-100/50 text-emerald-800 font-extrabold",
-                        medium: "border-amber-500 bg-amber-100/50 text-amber-800 font-extrabold",
-                        high: "border-rose-500 bg-rose-100/50 text-rose-800 font-extrabold"
-                      };
-                      return (
-                        <button
-                          key={p}
-                          onClick={() => handleUpdateTaskDetails(selectedTask.id!, { priority: p })}
-                          className={`flex-1 h-8 rounded-lg border capitalize transition cursor-pointer font-sans font-medium text-[11px] ${
-                            isActive ? activeStyle[p] : "border-slate-200 text-slate-500 hover:bg-slate-50"
-                          }`}
-                        >
-                          {p}
-                        </button>
-                      );
-                    })}
+                  <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-4">
+                    {selectedTask.custom ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCustomTask(selectedTask.id!)}
+                        className="h-10 px-4 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl flex items-center gap-1.5 transition cursor-pointer font-bold border border-rose-200/50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Card</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono text-left">
+                        <Clock className="w-3.5 h-3.5 text-slate-300" />
+                        <span>Sandbox core template step</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <section className="h-full bg-[#f8fafc] flex flex-col min-h-0">
+                <div className="p-5 sm:p-7 border-b border-slate-200/80 pr-16">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/15">
+                      <Sparkles className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-display font-extrabold text-indigo-950 leading-tight">Personal AI Tutor</h3>
+                      <p className="text-[10px] font-mono uppercase tracking-wider text-indigo-600 font-bold">
+                        Specialized for this milestone
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                {/* CREATION NOTES JOURNAL DIARY SECTION */}
-                <div className="text-left">
-                  <div className="flex items-center gap-1 mb-1 justify-between">
-                    <label className="block text-[9px] font-mono text-slate-500 uppercase tracking-wider font-bold flex items-center gap-1 text-left">
-                      <BookOpen className="w-3.5 h-3.5 text-indigo-500" />
-                      📒 Co-Founder Creation Diary Journal
-                    </label>
-                    <span className="text-[8px] font-mono text-slate-400">Autosaved to database</span>
-                  </div>
-                  <textarea
-                    value={selectedTask.notes || ""}
-                    onChange={(e) => handleUpdateTaskDetails(selectedTask.id!, { notes: e.target.value })}
-                    placeholder="Write down what you did on this step, what problems you solved, your feelings, or questions for your AI co-founder..."
-                    rows={4}
-                    className="w-full p-3 bg-[#fafcfc] border border-indigo-100 rounded-2xl text-slate-800 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300/30 font-sans leading-relaxed text-xs shadow-inner placeholder-slate-400/90 text-left"
-                  />
-                </div>
-
-                {/* Footer buttons */}
-                <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-4">
-                  {selectedTask.custom ? (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteCustomTask(selectedTask.id!)}
-                      className="h-10 px-4 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl flex items-center gap-1.5 transition cursor-pointer font-bold border border-rose-200/50"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Delete Card</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono text-left">
-                      <Clock className="w-3.5 h-3.5 text-slate-300" />
-                      <span>Sandbox Core Template step</span>
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-5 sm:p-7 space-y-4">
+                  {(selectedTask.tutorMessages ?? []).length === 0 && (
+                    <div className="bg-white border border-indigo-100 rounded-2xl p-4 text-slate-600 text-xs leading-relaxed shadow-sm">
+                      I am focused only on <strong className="text-indigo-950">{selectedTask.title}</strong>. Ask me to break down the next move, explain the code or diff, draft an outline, or reflect on your diary notes.
                     </div>
                   )}
 
-                  <button
-                    onClick={() => setSelectedTask(null)}
-                    className="h-10 px-6 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl shadow-sm transition active:scale-95 cursor-pointer ml-auto text-xs uppercase tracking-wide"
-                  >
-                    Done Inspecting
-                  </button>
+                  {(selectedTask.tutorMessages ?? []).map((msg, index) => {
+                    const isAgent = msg.sender === "agent";
+                    return (
+                      <div key={`${msg.sender}-${index}`} className={`flex ${isAgent ? "justify-start" : "justify-end"}`}>
+                        <div className={`max-w-[86%] rounded-2xl px-3.5 py-3 text-xs leading-relaxed shadow-sm whitespace-pre-wrap ${
+                          isAgent
+                            ? "bg-white border border-indigo-100 text-indigo-950 rounded-bl-sm"
+                            : "bg-emerald-600 text-white rounded-br-sm"
+                        }`}>
+                          {msg.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {isTutorTyping && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-indigo-100 rounded-2xl rounded-bl-sm px-3.5 py-3 text-[10px] text-indigo-700 font-medium flex items-center gap-2 shadow-sm">
+                        <span>Tutor is thinking</span>
+                        <span className="flex gap-0.5">
+                          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" />
+                          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-150" />
+                          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce delay-225" />
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={tutorEndRef} />
                 </div>
-              </div>
-            </motion.div>
+
+                <div className="border-t border-slate-200/80 bg-white p-4 sm:p-5">
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {[
+                      selectedTask.status === "completed"
+                        ? { label: "What did I learn?", text: "What did I learn here?" }
+                        : { label: "How do I start?", text: "How do I get started on this?" },
+                      selectedTask.actionType === "diff" || selectedTask.actionType === "draft"
+                        ? { label: "Explain this work", text: "Explain how this code or draft works." }
+                        : { label: "Draft an outline", text: "Help me draft an outline." },
+                      { label: "Reflect on notes", text: "Reflect on my notes for this milestone." }
+                    ].map((suggestion) => (
+                      <button
+                        key={suggestion.label}
+                        type="button"
+                        onClick={() => handleSendTutorMessage(suggestion.text)}
+                        disabled={isTutorTyping}
+                        className="text-[10px] font-bold bg-indigo-50 text-indigo-950 border border-indigo-100 rounded-lg px-2.5 py-1.5 hover:bg-indigo-100 transition cursor-pointer disabled:opacity-50"
+                      >
+                        {suggestion.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSendTutorMessage();
+                    }}
+                    className="flex gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={tutorInput}
+                      onChange={(e) => setTutorInput(e.target.value)}
+                      disabled={isTutorTyping}
+                      placeholder={isTutorTyping ? "Tutor is writing..." : "Ask your task tutor..."}
+                      className="flex-1 h-11 px-3 bg-white border border-slate-200 text-xs text-slate-900 rounded-xl focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300/30 text-left"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!tutorInput.trim() || isTutorTyping}
+                      className="w-11 h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl flex items-center justify-center active:scale-95 transition shadow-sm cursor-pointer disabled:opacity-45"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                  </form>
+                </div>
+              </section>
+            </motion.aside>
           </div>
         )}
       </AnimatePresence>
@@ -1159,7 +1390,7 @@ export default function ProjectWorkbox({
 interface KanbanCardProps {
   key?: string;
   step: ProjectStep;
-  onInspect: (step: ProjectStep) => void;
+  onInspect: (id: string) => void;
   onMove: (newStatus: ProjectStep["status"]) => void;
 }
 
@@ -1177,7 +1408,7 @@ function KanbanCard({ step, onInspect, onMove }: KanbanCardProps) {
   const handleInspectClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest("button") || target.closest("select")) return;
-    onInspect(step);
+    if (step.id) onInspect(step.id);
   };
 
   return (

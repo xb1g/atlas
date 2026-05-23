@@ -37,6 +37,7 @@ export interface ProjectStep {
   actionType: "init" | "fetch" | "draft" | "diff" | "publish";
   custom?: boolean;    // Flag for custom tasks added on the PM dashboard
   notes?: string;      // Student journal/progress diary notes for this task
+  tutorMessages?: { sender: "student" | "agent"; text: string }[]; // Task-specific AI tutor history
   priority?: "low" | "medium" | "high"; // Priority level of the task
   payload?: {
     consoleLogs?: string[];
