@@ -6,6 +6,10 @@ export interface InterviewAnswers {
   medium: string;
   topic: string;
   freeTime: string;
+  solveApproach?: string;
+  notBoring?: string;
+  access?: string;
+  winFeeling?: string;
 }
 
 export interface Opportunity {
@@ -15,12 +19,13 @@ export interface Opportunity {
   target: string;
   impact: string;
   difficulty: string;
-  summary: string;
-  whyMatch: string;
+  summary?: string;
+  whyMatch?: string;
   estimatedMinutes: number;
-  sourceUrl: string;
-  complexity: string;
+  sourceUrl?: string;
+  complexity?: string;
   imageUrl?: string; // Add an option for displaying a beautiful customized illustration card
+  status?: "planned" | "building" | "completed" | "coming-soon";
 }
 
 export interface ProjectStep {

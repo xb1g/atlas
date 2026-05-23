@@ -43,6 +43,10 @@ interface SessionProfile {
     medium: string;      // Writing, Coding, Visual, organizing 
     topic: string;       // Sea migration, plastic, forest, etc
     freeTime: string;    // Time availability
+    solveApproach?: string;
+    notBoring?: string;
+    access?: string;
+    winFeeling?: string;
   };
   opportunities: any[];
   activeProject: {
@@ -74,7 +78,11 @@ let activeSession: SessionProfile = {
     spark: "Hate seeing microplastics wash up on sea turtle nesting beaches",
     medium: "writing advocacy letters & guest blogging",
     topic: "marine ecosystems & beach microplastics conservation",
-    freeTime: "This weekend (2 hours)"
+    freeTime: "This weekend (2 hours)",
+    solveApproach: "I draw it out first",
+    notBoring: "Making it look good",
+    access: "A laptop",
+    winFeeling: "Someone uses what I made"
   },
   opportunities: [],
   activeProject: null,
@@ -90,7 +98,7 @@ app.get("/api/session", (req, res) => {
 
 // 2. API: Save Interview Answers and Reset Active Project State
 app.post("/api/session/answers", (req, res) => {
-  const { name, age, grade, spark, medium, topic, freeTime } = req.body;
+  const { name, age, grade, spark, medium, topic, freeTime, solveApproach, notBoring, access, winFeeling } = req.body;
   
   activeSession.answers = {
     name: name || "Maya",
@@ -99,7 +107,11 @@ app.post("/api/session/answers", (req, res) => {
     spark: spark || "",
     medium: medium || "",
     topic: topic || "",
-    freeTime: freeTime || ""
+    freeTime: freeTime || "",
+    solveApproach: solveApproach || "",
+    notBoring: notBoring || "",
+    access: access || "",
+    winFeeling: winFeeling || ""
   };
   activeSession.opportunities = [];
   activeSession.activeProject = null;
@@ -201,58 +213,44 @@ function getPrebuiltMockOpportunities(answers: typeof activeSession.answers) {
   ];
 }
 
-// 3. API: Dynamic Live-Mined Menu Generation via prompt-grounding or prompt JSON Schema
-app.get("/api/opportunities/mine", async (req, res) => {
+// 3. API: Fast initial planning of 6 opportunities
+app.get("/api/opportunities/plan", async (req, res) => {
   const client = getGeminiClient();
   const answers = activeSession.answers;
 
   if (!client) {
-    // Graceful Fallback: Generate custom-tailored mock opportunities representing high-fidelity demo
     console.log("No live GEMINI_API_KEY detected. Utilizing mock opportunities tailored to answers.");
-    // Wait helper to simulate mining
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    activeSession.opportunities = getPrebuiltMockOpportunities(answers);
-    return res.json({
-      opportunities: activeSession.opportunities,
-      isLiveAI: false,
-    });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    activeSession.opportunities = getPrebuiltMockOpportunities(answers).map(o => ({ ...o, status: "completed" }));
+    return res.json({ opportunities: activeSession.opportunities, isLiveAI: false });
   }
 
   try {
+    let backgroundStr = "";
+    if (answers.solveApproach) backgroundStr += `\n- Problem-Solving Approach: "${answers.solveApproach}"`;
+    if (answers.notBoring) backgroundStr += `\n- What they find engaging: "${answers.notBoring}"`;
+    if (answers.access) backgroundStr += `\n- Access to tools: "${answers.access}"`;
+    if (answers.winFeeling) backgroundStr += `\n- Definition of success/win: "${answers.winFeeling}"`;
+
     const prompt = `
-Generate 6 live-sounding specific action project opportunities for a ${answers.age || 16}-year-old student named ${answers.name || "Maya"} who is looking to do an actionable, shippable micro-project.
-Here is the student's profile:
-- What they care about (spark): "${answers.spark || "Microplastics in turtle nests"}"
-- How they want to make an impact (medium): "${answers.medium || "Writing laws or coding maps"}"
-- Context/Topic: "${answers.topic || "marine ecology issues"}"
-- Available timeframe: "${answers.freeTime || "This weekend"}"
+Generate 6 micro-adventure titles and types for a ${answers.age || 16}-year-old named ${answers.name || "Maya"}.
+Profile:
+- What they care about: "${answers.spark || "Microplastics in turtle nests"}"
+- Medium: "${answers.medium || "Writing laws or coding maps"}"
+- Topic: "${answers.topic || "marine ecology issues"}"${backgroundStr}
 
-Requirements:
-- Ensure the options sound highly concrete, authentic, and live – NOT generic templates like "Write a report on ecology".
-- Return 6 options of the following types:
-  - type 'oss-doc-pr': editing markdown guidelines or fixing README documentation gaps.
-  - type 'publish-essay': writing dynamic Substack posts or Guest columns.
-  - type 'eco-campaign': public representative letter templates and advocacy plans.
-  - type 'code-widget': interactive visual slider math calculators or micro React tools.
-  - type 'wildlife-map': coordinate marker arrays for Google maps or tracking protocols.
-  - type 'teach-skill': draft additions to the official pbakaus/impeccable design helper file instructing AI coding agents on styling, touch responsive rules, or padding layouts.
-- Provide a clear, compelling reason for each opportunity justifying why it matches their profile answers and addresses their age (${answers.age}).
+Return exactly 6 options as a JSON array of objects with 'id', 'type', 'title', and 'target' (simulated URL).
+Types must be exactly one of: 'oss-doc-pr', 'publish-essay', 'eco-campaign', 'code-widget', 'wildlife-map', 'teach-skill'.
+Id should be unique, e.g., 'proj-1', 'proj-2', etc.
 
-Return a JSON array with exactly the following structure:
+JSON structure:
 {
   "opportunities": [
     {
-      "id": "string (unique code like oss-docs-1, eco-campaign-1, etc)",
+      "id": "string",
       "type": "oss-doc-pr" | "publish-essay" | "eco-campaign" | "code-widget" | "wildlife-map" | "teach-skill",
-      "title": "string (e.g., Hillsborough Council Public Sand Sieve Directive)",
-      "target": "string (mock live domain e.g. hillsborough.gov/citizens-portal or github.com/inaturalist)",
-      "impact": "string (e.g. Advocacy, Databases, Sensors)",
-      "difficulty": "string (e.g. Starter PR / Civic Advocacy)",
-      "summary": "string (2-sentence description of the gap to fill)",
-      "whyMatch": "string (Direct address of how it matches their named goal)",
-      "estimatedMinutes": number (e.g. 15 to 45),
-      "sourceUrl": "string (simulated target url)",
-      "complexity": "string (what skills it teaches or requires)"
+      "title": "string",
+      "target": "string"
     }
   ]
 }
@@ -271,19 +269,12 @@ Return a JSON array with exactly the following structure:
               type: Type.ARRAY,
               items: {
                 type: Type.OBJECT,
-                required: ["id", "type", "title", "target", "impact", "difficulty", "summary", "whyMatch", "estimatedMinutes", "sourceUrl", "complexity"],
+                required: ["id", "type", "title", "target"],
                 properties: {
                   id: { type: Type.STRING },
                   type: { type: Type.STRING },
                   title: { type: Type.STRING },
                   target: { type: Type.STRING },
-                  impact: { type: Type.STRING },
-                  difficulty: { type: Type.STRING },
-                  summary: { type: Type.STRING },
-                  whyMatch: { type: Type.STRING },
-                  estimatedMinutes: { type: Type.INTEGER },
-                  sourceUrl: { type: Type.STRING },
-                  complexity: { type: Type.STRING },
                 }
               }
             }
@@ -292,34 +283,103 @@ Return a JSON array with exactly the following structure:
       }
     });
 
-    const resultText = response.text || "{}";
-    const data = JSON.parse(resultText);
+    const data = JSON.parse(response.text || "{}");
     
     if (data.opportunities && Array.isArray(data.opportunities)) {
-      activeSession.opportunities = data.opportunities.map((o: any, idx: number) => {
-        // Seed some standard picsum tags for visual thumbnail appeal
-        const category = o.type === "wildlife-map" ? "maps" : o.type === "code-widget" ? "tech" : o.type === "eco-campaign" ? "campaign" : "science";
-        return {
-          ...o,
-          imageUrl: `https://picsum.photos/seed/${category}-${idx}/400/300`
-        };
-      });
+      activeSession.opportunities = data.opportunities.map((o: any) => ({
+        ...o,
+        status: "planned",
+        impact: "Pending",
+        difficulty: "Pending",
+        estimatedMinutes: 30
+      }));
     } else {
-      activeSession.opportunities = getPrebuiltMockOpportunities(answers);
+      activeSession.opportunities = getPrebuiltMockOpportunities(answers).map(o => ({ ...o, status: "completed" }));
     }
 
-    res.json({
-      opportunities: activeSession.opportunities,
-      isLiveAI: true,
-    });
+    res.json({ opportunities: activeSession.opportunities, isLiveAI: true });
   } catch (error: any) {
-    console.error("Gemini live mining failed, fallback to mock data:", error);
-    activeSession.opportunities = getPrebuiltMockOpportunities(answers);
-    res.json({
-      opportunities: activeSession.opportunities,
-      isLiveAI: false,
-      errorMsg: error.message || String(error)
+    console.error("Plan generation failed:", error);
+    activeSession.opportunities = getPrebuiltMockOpportunities(answers).map(o => ({ ...o, status: "completed" }));
+    res.json({ opportunities: activeSession.opportunities, isLiveAI: false });
+  }
+});
+
+// 3.5 API: Progressively build a specific opportunity
+app.post("/api/opportunities/build", async (req, res) => {
+  const { opportunityId } = req.body;
+  const client = getGeminiClient();
+  const answers = activeSession.answers;
+
+  const oppIndex = activeSession.opportunities.findIndex(o => o.id === opportunityId);
+  if (oppIndex === -1) return res.status(404).json({ error: "Not found" });
+
+  const opp = activeSession.opportunities[oppIndex];
+
+  if (!client || opp.status === "completed") {
+    // If no client, it's already mock and completed
+    return res.json({ opportunity: opp });
+  }
+
+  // Mark as building
+  activeSession.opportunities[oppIndex].status = "building";
+
+  try {
+    const prompt = `
+Generate the missing details for this specific project opportunity for ${answers.name || "Maya"} (${answers.age || 16}):
+Title: "${opp.title}"
+Type: "${opp.type}"
+Target: "${opp.target}"
+User cares about: "${answers.spark || "Marine ecology"}"
+
+Return JSON:
+{
+  "impact": "string (e.g. Advocacy, Databases)",
+  "difficulty": "string (e.g. Starter PR / Civic Advocacy)",
+  "summary": "string (2-sentence description of the task)",
+  "whyMatch": "string (Direct address of why it matches them)",
+  "estimatedMinutes": number (15 to 45),
+  "sourceUrl": "string (simulated target url)",
+  "complexity": "string (what skills it teaches or requires)"
+}
+`;
+
+    const response = await client.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          required: ["impact", "difficulty", "summary", "whyMatch", "estimatedMinutes", "sourceUrl", "complexity"],
+          properties: {
+            impact: { type: Type.STRING },
+            difficulty: { type: Type.STRING },
+            summary: { type: Type.STRING },
+            whyMatch: { type: Type.STRING },
+            estimatedMinutes: { type: Type.INTEGER },
+            sourceUrl: { type: Type.STRING },
+            complexity: { type: Type.STRING },
+          }
+        }
+      }
     });
+
+    const data = JSON.parse(response.text || "{}");
+    const category = opp.type === "wildlife-map" ? "maps" : opp.type === "code-widget" ? "tech" : opp.type === "eco-campaign" ? "campaign" : "science";
+    
+    activeSession.opportunities[oppIndex] = {
+      ...opp,
+      ...data,
+      imageUrl: \`https://picsum.photos/seed/\${category}-\${oppIndex}/400/300\`,
+      status: "completed"
+    };
+
+    res.json({ opportunity: activeSession.opportunities[oppIndex] });
+  } catch (error: any) {
+    console.error("Build details failed:", error);
+    activeSession.opportunities[oppIndex].status = "completed"; // fallback so it doesn't spin forever
+    res.json({ opportunity: activeSession.opportunities[oppIndex], error: error.message });
   }
 });
 
@@ -353,11 +413,12 @@ app.post("/api/project/select", async (req, res) => {
     
     if (client) {
       try {
-        const generation = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Given a student named ${n} (${grade}) interested in: "${activeSession.answers.spark || "Plastics on beaches"}", write a simple 2-paragraph addition representing a documentation guide about microplastic toxicity metrics in nesting sand. Return ONLY the drafted text block to insert.`
+        const generation = await (client as any).interactions.create({
+          agent: "antigravity-preview-05-2026",
+          input: `Write a student_profile.json file with ${JSON.stringify(activeSession.answers)}. Then, given a student named ${n} (${grade}) interested in: "${activeSession.answers.spark || "Plastics on beaches"}", write a simple 2-paragraph addition representing a documentation guide about microplastic toxicity metrics in nesting sand. Return ONLY the drafted text block to insert.`,
+          environment: "remote"
         });
-        draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n${generation.text || "No draft generated."}`;
+        draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n${(generation.text || generation.outputText) || "No draft generated."}`;
       } catch (e) {
         draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n- Metric: Nesting beach toxicity ratio (MP-Tox-Rating) is calculated via microplastic density per meter of nesting sand.\n- Safety levels: Any region with >10 microplastic shards per kilogram of nesting sand experiences significant incubation temperatures distortion.`;
       }
@@ -367,11 +428,12 @@ app.post("/api/project/select", async (req, res) => {
   } else if (opportunity.type === "publish-essay") {
     if (client) {
       try {
-        const generation = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Create an editorial essay (about 200 words) signed by ${n}, a ${age}-year-old environmental leader, covering "${activeSession.answers.spark}". Make the tone passionate, informative, containing three bulleted action proposals. The headline must belong to: "${opportunity.title}". Return ONLY the drafted markdown text.`
+        const generation = await (client as any).interactions.create({
+          agent: "antigravity-preview-05-2026",
+          input: `Write a student_profile.json file with ${JSON.stringify(activeSession.answers)}. Then, Create an editorial essay (about 200 words) signed by ${n}, a ${age}-year-old environmental leader, covering "${activeSession.answers.spark}". Make the tone passionate, informative, containing three bulleted action proposals. The headline must belong to: "${opportunity.title}". Return ONLY the drafted markdown text.`,
+          environment: "remote"
         });
-        responseEssayPrompt = generation.text || "Draft could not be initiated live.";
+        responseEssayPrompt = (generation.text || generation.outputText) || "Draft could not be initiated live.";
       } catch (e) {
         responseEssayPrompt = `# ${opportunity.title}\n\nBy ${n}, ${grade}\n\nWe look at the beach and see a canvas for sunset walks. But for nesting green sea turtles, it's a minefield of non-biodegradable particles. Microplastics are changing sand density, locking in solar radiation, and threatening upcoming turtle generations. Here are three quick protocols to implement in coastal schools today. Let's make nesting grounds real sanctuaries again.`;
       }
@@ -383,11 +445,12 @@ app.post("/api/project/select", async (req, res) => {
     draftBefore = "DRAFT ADVOCACY RESOLUTION FOR CITY COUNCIL\n\nAttn: Hillsborough Environmental Protection Board\nStaging environmental oversight directive.";
     if (client) {
       try {
-        const generation = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Create an official citizen communication letter from ${n} (Age ${age}, student in Hillsborough) directed to the local Environmental Council regarding the urgent need to establish community-accessible microplastic sieve kits at beach access gates. Focus on nesting sands temperature safety. Return ONLY the complete formal petition letter text.`
+        const generation = await (client as any).interactions.create({
+          agent: "antigravity-preview-05-2026",
+          input: `Write a student_profile.json file with ${JSON.stringify(activeSession.answers)}. Then, Create an official citizen communication letter from ${n} (Age ${age}, student in Hillsborough) directed to the local Environmental Council regarding the urgent need to establish community-accessible microplastic sieve kits at beach access gates. Focus on nesting sands temperature safety. Return ONLY the complete formal petition letter text.`,
+          environment: "remote"
         });
-        responseEssayPrompt = generation.text || "Draft could not be completed live.";
+        responseEssayPrompt = (generation.text || generation.outputText) || "Draft could not be completed live.";
         draftAfter = responseEssayPrompt;
       } catch (e) {
         responseEssayPrompt = `ADVOCACY RESOLUTION PRESENTED BY ${n.toUpperCase()} (${grade})\n\nTO THE HILLSBOROUGH ENVIRONMENT & PARKS SUPERINTENDENTS:\n\nSubject: Mandating Soil Sieve Hubs at Beach Boundary Dunes\n\nWe, the youth residents, ask for beach cleanup hubs to be equipped with soil sieve kits. Removing large trash is not enough. Turtle nests suffer from solar heat locks when micro-particles exceed 12%. Community led sieving is achievable and teaches valuable science.`;
@@ -413,11 +476,12 @@ app.post("/api/project/select", async (req, res) => {
     
     if (client) {
       try {
-        const generation = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: `Write a 2-paragraph markdown addition for an AI design guidelines file (for a project called pbakaus/impeccable). It must specify exact styling directives for touch target safety, recommending at least 44px minimum touch sizes and hover cursor cues for desktop. Keep the design language crisp and professional. Return ONLY the drafted markdown text.`
+        const generation = await (client as any).interactions.create({
+          agent: "antigravity-preview-05-2026",
+          input: `Write a student_profile.json file with ${JSON.stringify(activeSession.answers)}. Then, write a 2-paragraph markdown addition for an AI design guidelines file (for a project called pbakaus/impeccable). It must specify exact styling directives for touch target safety, recommending at least 44px minimum touch sizes and hover cursor cues for desktop. Keep the design language crisp and professional. Return ONLY the drafted markdown text.`,
+          environment: "remote"
         });
-        draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n${generation.text || "No draft generated."}`;
+        draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n${(generation.text || generation.outputText) || "No draft generated."}`;
       } catch (e) {
         draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n- Mobile minimum size: Touch targets MUST span at least 44x44px to prevent miss-clicks on mobile devices.\n- Hover feedbacks: Interactive nodes MUST specify a hover animation transition (e.g. hover:bg-opacity-80) to feed back cursor alignments.`;
       }

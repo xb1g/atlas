@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sparkles, Terminal, Code, BookOpen, AlertCircle, RefreshCw, Compass, Sun } from "lucide-react";
+import { Sparkles, Terminal, Code, BookOpen, AlertCircle, RefreshCw, Sun } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { SessionProfile, InterviewAnswers, Opportunity } from "./types";
 import InterviewForm from "./components/InterviewForm";
@@ -8,6 +8,7 @@ import OpportunityMenu from "./components/OpportunityMenu";
 import BlueprintPlan from "./components/BlueprintPlan";
 import ProjectWorkbox from "./components/ProjectWorkbox";
 import ArtifactSuccess from "./components/ArtifactSuccess";
+import Logo from "./components/Logo";
 // @ts-ignore
 import monetBg from "./assets/images/monet_cliff_horizon_1779562138549.png";
 
@@ -50,7 +51,7 @@ export default function App() {
     // Simulate mining live logs for judges
     setMiningLogs([]);
     const logsSequence = [
-      "🌸 Sparking beautiful new thoughts on: " + answers.spark,
+      "🌸 Mapping your personalized micro-adventure on: " + answers.spark,
       "🎨 Finding matching projects with pretty blogs, websites, and maps...",
       "🖌️ Crafting custom steps perfect for " + answers.name + "'s schedule...",
       "🌿 Setting up a personal, safe creation laboratory...",
@@ -75,11 +76,11 @@ export default function App() {
         body: JSON.stringify(answers),
       });
 
-      // Fetch live-mined opportunities
-      const resp = await fetch("/api/opportunities/mine");
+      // Fetch live-mined opportunities plan
+      const resp = await fetch("/api/opportunities/plan");
       const minedData = await resp.json();
 
-      // Ensure mining logs showing at least 2.5s to let the user see the gorgeous crawl logs
+      // Shorten the wait time to just 1s to feel fast but still show logs
       setTimeout(() => {
         clearInterval(interval);
         setSession((prev: any) => ({
@@ -89,7 +90,36 @@ export default function App() {
         }));
         setLoading(false);
         setView("MENU");
-      }, 2500);
+
+        // Kick off progressive building for any planned opportunity
+        if (minedData.opportunities && Array.isArray(minedData.opportunities)) {
+          minedData.opportunities.forEach((opp: any) => {
+            if (opp.status === "planned") {
+              fetch("/api/opportunities/build", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ opportunityId: opp.id }),
+              })
+                .then((res) => res.json())
+                .then((data) => {
+                  if (data.opportunity) {
+                    setSession((prev: any) => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        opportunities: prev.opportunities.map((o: any) =>
+                          o.id === data.opportunity.id ? data.opportunity : o
+                        ),
+                      };
+                    });
+                  }
+                })
+                .catch((e) => console.error("Failed building opportunity", e));
+            }
+          });
+        }
+      }, 1500);
+
 
     } catch (err) {
       console.error("Failed mining live opportunities", err);
@@ -188,19 +218,19 @@ export default function App() {
       {/* Persistent App Header with light theme glassmorphism */}
       <header className="border-b border-orange-100/40 bg-white/60 backdrop-blur-md sticky top-0 z-50 px-4 sm:px-6 py-3.5 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-emerald-50 border border-emerald-300/30 p-2 rounded-xl flex items-center justify-center text-emerald-600 shadow-sm">
-              <Compass className="w-5 h-5 text-emerald-600 rotate-45" />
+          <button onClick={handleRestart} className="flex items-center gap-3 text-left group cursor-pointer">
+            <div className="bg-emerald-50/50 border border-emerald-300/25 p-1 rounded-2xl flex items-center justify-center shadow-inner transition-all duration-300 group-hover:border-emerald-300/50 group-hover:bg-emerald-50">
+              <Logo size={34} showBg={true} className="transition-transform duration-500 ease-out group-hover:rotate-12" />
             </div>
             <div>
-              <span className="text-[15px] font-display font-bold tracking-wider text-emerald-950 uppercase">
+              <span className="text-[15px] font-display font-bold tracking-wider text-emerald-950 uppercase group-hover:text-emerald-800 transition-colors">
                 Atlas
               </span>
-              <p className="text-[9px] font-mono text-emerald-800/70 uppercase tracking-widest leading-none mt-1">
+              <p className="text-[9px] font-mono text-emerald-800/70 uppercase tracking-widest leading-none mt-1 group-hover:text-emerald-600 transition-colors">
                 Real Things &bull; Dream Big
               </p>
             </div>
-          </div>
+          </button>
 
           <div className="flex items-center gap-4">
             {/* Live API token connection health status */}
@@ -259,7 +289,7 @@ export default function App() {
               {/* Spinning compass loading state for crawler */}
               <div className="relative inline-block mb-6">
                 <div className="absolute inset-0 bg-emerald-300/20 rounded-full blur-xl animate-ping" />
-                <Compass className="w-14 h-14 text-emerald-600 animate-spin mx-auto rotate-45" />
+                <Logo size={64} className="animate-spin-slow mx-auto relative z-10" />
               </div>
 
               <h2 className="text-2xl font-display font-medium text-emerald-950 mb-2">

@@ -6,6 +6,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-display: "Space Grotesk", sans-serif;
   --font-hand: "Caveat", cursive;
+  --animate-spin-slow: spin 10s linear infinite;
 }
 
 /* Custom gorgeous keyframes for painterly soft clouds and sunset pulse */

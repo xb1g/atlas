@@ -126,6 +126,11 @@ The Atlas platform uses layer depth instead of harsh shadows. Containers are sty
 - **Style:** Antique warm ivory backing with a thin orange-gray border (#fbf9f4).
 - **Focus:** Highlights outline in active foliage green (#10b981) with a soft ring shadow.
 
+### Immersive Media / Artwork
+- **Borderless Canvas Blending:** When placing painterly or impressionist artwork inside cards, avoid hard edges. Use `[mask-image:linear-gradient(to_bottom,black_30%,transparent_100%)]` or radial gradients to fade the artwork seamlessly into the card's background.
+- **Texture Merging:** Use `mix-blend-multiply` on artwork placed against the antique canvas paper backgrounds (`#fcfbf9` or `#f7f5ee`). This organically merges the artwork's paper texture with the UI's background layer, making the image feel painted directly onto the interface rather than pasted inside a box.
+- **Floating Floating UI (Glassmorphism):** Any badges, icons, or text floating over immersive artwork should use high-blur glassmorphism (`backdrop-blur-md` or `-xl`) with soft translucent white backings (`bg-white/40`) and very subtle borders (`border-white/20`) to prevent harsh geometric shapes from interrupting the organic painting.
+
 ## 6. Do's and Don'ts
 
 ### Do:

@@ -24,7 +24,11 @@ Three-word personality: *Warm, Whimsical, Sparkling*
 - **Infantile Educational Games**: Avoid noisy, childish cartoon-style characters or overstimulating flash elements that might feel condescending to teenagers (ages 13-20). We pair simple actions with prestigious, beautiful design of Claude Monet's painterly landscapes.
 
 ## Design Principles
-1. **The Spark Over Forms**: Frame onboarding as an invitation to share a personal irritation or interest rather than satisfying rigid technical questions.
+1. **The Spark Over Forms (Onboarding Wizard)**: Frame onboarding as a premium, 5-step interactive conversational wizard rather than satisfying rigid technical questions or a single overwhelming form.
+   - **No Abstract Terminology**: Avoid using abstract developer jargon like "What is your spark?" in the UI, as teenagers (ages 13–20) find it confusing. Instead, translate it into friendly, relatable framing like *"What is something in the real world that bugs you or that you want to fix?"* or *"What you care about"*.
+   - **Interactive Suggestion Chips**: Use custom, clickable suggestion chips (e.g., Beach Plastic, Cafeteria Waste) to help students instantly pre-fill ideas and overcome blank-page anxiety.
+   - **No Managed Agents**: Step 1 utilizes a lightweight, high-performance standard GenAI API call (`gemini-3.5-flash`) rather than establishing a complex, heavy remote Managed Agent.
+   - **Dynamic Personalization**: Welcome students by name and provide customized feedback based on their age and selections to foster warmth and safety.
 2. **Double-Vision Before Committing**: Retain total student agency by displaying precise visual previews (before/after buffers and golden drafts) at every step before executing changes.
 3. **Prestigious-yet-Approachable**: Frame teenage creations with premium typographic pairings and elegant organic colors (inspired by Monet landscapes) so that their final shippable pieces look highly professional.
 4. **Actionable Micro-steps**: Deconstruct complex Git, API, or writing operations into clear, bite-sized checklists with standard interactive touchpoints.
