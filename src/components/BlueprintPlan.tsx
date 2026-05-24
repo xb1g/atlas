@@ -1,4 +1,6 @@
 import { Opportunity, ActiveProject } from "../types";
+import ReactMarkdown from "react-markdown";
+import { MarkdownErrorBoundary } from "./MarkdownErrorBoundary";
 import { Clock, Compass, ArrowRight, Shield, Award, Terminal, Code, Sparkles, FileText, CheckCircle2, ChevronLeft, MessageSquare, Send } from "lucide-react";
 import { motion } from "motion/react";
 import { FormEvent, useEffect, useRef, useState } from "react";
@@ -22,15 +24,25 @@ export default function BlueprintPlan({
   const [selectedStepIds, setSelectedStepIds] = useState<string[]>(
     project ? project.steps.map((step, i) => getStepKey(step, i)) : []
   );
-  const [chatMessages, setChatMessages] = useState<{ sender: "agent" | "student"; text: string }[]>([
-    {
-      sender: "agent",
-      text: "Tell me what to change before we start. I can rewrite, add, remove, or reorder the steps on this plan.",
-    },
-  ]);
+  const chatStorageKey = `atlas_plan_chat_${opportunity.id}`;
+  const defaultWelcome = { sender: "agent" as const, text: "Tell me what to change before we start. I can rewrite, add, remove, or reorder the steps on this plan." };
+
+  const [chatMessages, setChatMessages] = useState<{ sender: "agent" | "student"; text: string }[]>(() => {
+    try {
+      const saved = localStorage.getItem(chatStorageKey);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [defaultWelcome];
+  });
   const [chatInput, setChatInput] = useState("");
   const [isAgentTyping, setIsAgentTyping] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(chatStorageKey, JSON.stringify(chatMessages));
+    } catch {}
+  }, [chatMessages, chatStorageKey]);
   const knownStepIdsRef = useRef<Set<string>>(new Set(project ? project.steps.map((step, i) => getStepKey(step, i)) : []));
   
   const typeLabel = opportunity.label || opportunity.type;
@@ -334,7 +346,11 @@ export default function BlueprintPlan({
                             : "bg-white border border-orange-100 text-emerald-950 rounded-br-sm"
                         }`}
                       >
-                        {msg.text}
+                        <div className="prose prose-sm prose-emerald max-w-none text-current font-sans leading-relaxed">
+                          <MarkdownErrorBoundary fallbackText={msg.text}>
+                            <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
+                          </MarkdownErrorBoundary>
+                        </div>
                       </div>
                     </div>
                   );

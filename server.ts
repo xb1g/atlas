@@ -74,6 +74,7 @@ interface SessionProfile {
         destUrl?: string;
       };
     }[];
+    coFounderMessages?: { sender: "student" | "agent"; text: string }[];
   } | null;
 }
 
@@ -278,7 +279,7 @@ async function saveSession(session: SessionProfile) {
         activeProject: session.activeProject ? {
           ...session.activeProject,
           steps: session.activeProject.steps.map((step: any) => {
-            const { payload, tutorMessages, ...rest } = step;
+            const { payload, ...rest } = step;
             // Keep only lightweight payload fields (destUrl, diffHeader)
             const slimPayload = payload ? {
               ...(payload.destUrl ? { destUrl: payload.destUrl } : {}),
@@ -1717,18 +1718,26 @@ app.post("/api/project/task-tutor", async (req, res) => {
     const currentMessages = task.tutorMessages ?? [];
     const studentMessage = { sender: "student" as const, text: cleanMessage };
     const client = getGeminiClient();
-    let reply = "";
+    let finalReply = "";
 
     if (!client) {
-      reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
-    } else {
-      try {
-        const recentHistory = currentMessages.slice(-10).map((msg) => {
-          const role = msg.sender === "student" ? "user" : "model";
-          return { role, parts: [{ text: msg.text }] };
-        });
+      finalReply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+      res.json({ reply: finalReply, project: session.activeProject, task: task });
+      return;
+    }
 
-        const systemInstruction = `You are the Atlas Personal AI Tutor for exactly one Kanban task.
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    try {
+      const recentHistory = currentMessages.slice(-10).map((msg) => {
+        const role = msg.sender === "student" ? "user" : "model";
+        return { role, parts: [{ text: msg.text }] };
+      });
+
+      const systemInstruction = `You are the Atlas Personal AI Tutor for exactly one Kanban task.
 You are tutoring ${session.answers.name || "the student"} (age ${session.answers.age || 16}, ${session.answers.grade || "student"}).
 Student spark/interest: "${session.answers.spark || ""}".
 Adventure title: "${opportunity.title}".
@@ -1750,53 +1759,50 @@ Your job:
 - Use short bullets or starter code only when useful.
 - Keep the response under 160 words.`;
 
-        const response = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: [
-            ...recentHistory,
-            { role: "user", parts: [{ text: cleanMessage }] }
-          ],
-          config: {
-            systemInstruction,
-          }
-        });
+      const responseStream = await client.models.generateContentStream({
+        model: "gemini-3.5-flash",
+        contents: [
+          ...recentHistory,
+          { role: "user", parts: [{ text: cleanMessage }] }
+        ],
+        config: {
+          systemInstruction,
+        }
+      });
 
-        reply = response.text?.trim() || makePracticeTutorReply(cleanMessage, task, session, opportunity);
-      } catch (error) {
-        console.error("Task tutor endpoint failed; using practice reply.", error);
-        reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          finalReply += chunk.text;
+          res.write(`data: ${JSON.stringify({ type: "chunk", text: chunk.text })}\n\n`);
+        }
+      }
+    } catch (error) {
+      console.error("Task tutor stream failed; using practice reply.", error);
+      if (!finalReply) {
+        finalReply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+        res.write(`data: ${JSON.stringify({ type: "chunk", text: finalReply })}\n\n`);
       }
     }
 
-    const agentMessage = { sender: "agent" as const, text: reply };
-    const latestSession = await getSession(sessionId);
-    if (!latestSession.activeProject) {
-      return res.status(400).json({ error: "No active project found" });
-    }
-
-    const latestTaskIndex = latestSession.activeProject.steps.findIndex((step) => step.id === taskId);
-    if (latestTaskIndex === -1) {
-      return res.status(404).json({ error: "Task not found" });
-    }
-
-    const latestTask = latestSession.activeProject.steps[latestTaskIndex];
-    latestSession.activeProject.steps[latestTaskIndex] = {
-      ...latestTask,
-      tutorMessages: [...(latestTask.tutorMessages ?? []), studentMessage, agentMessage],
+    const agentMessage = { sender: "agent" as const, text: finalReply.trim() };
+    session.activeProject.steps[taskIndex] = {
+      ...task,
+      tutorMessages: [...(task.tutorMessages ?? []), studentMessage, agentMessage],
     };
-    latestSession.activeProject.started = true;
+    session.activeProject.started = true;
+    await saveSession(session);
 
-    await saveSession(latestSession);
-    res.json({
-      success: true,
-      reply,
-      messages: latestSession.activeProject.steps[latestTaskIndex].tutorMessages,
-      project: latestSession.activeProject,
-      task: latestSession.activeProject.steps[latestTaskIndex],
-    });
+    res.write(`data: ${JSON.stringify({ type: "done", project: session.activeProject, task: session.activeProject.steps[taskIndex] })}\n\n`);
+    res.end();
+
   } catch (err: any) {
     console.error("Unexpected task-tutor error:", err);
-    return res.status(500).json({ error: "Tutor had a problem. Please try again!" });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Tutor had a problem. Please try again!" });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: "error", error: "Tutor had a problem." })}\n\n`);
+      res.end();
+    }
   }
 });
 
@@ -1929,36 +1935,37 @@ app.post("/api/project/chat-to-edit", async (req, res) => {
     const notesSummaryText = notesWithContent.map(s => `- [Task: ${s.title}] Notes: "${s.notes}"`).join("\n");
     const completedCount = project.steps.filter(s => s.status === "completed").length;
 
-    const systemInstruction = `You are the Atlas AI Co-Founder and tech mentor. You are assisting a teen student in co-creating their project on an Agile Kanban Board.
-The student is ${studentName} (Age ${studentAge}) working on the project: "${opportunity.title}".
-Their focus/spark: "${session.answers.spark}".
+    const systemInstruction = `You are a sharp, friendly co-founder helping ${studentName} (age ${studentAge}) build "${opportunity.title}".
+Their focus: "${session.answers.spark}".
 
-Your capabilities:
-1. **Supportive Mentor Chat**: Your default mode is normal conversation. Answer questions, brainstorm, explain the project, help the student feel oriented, and talk naturally. Do not mutate the board unless the student clearly asks for a task/card/priority/status change.
-2. **Mutate the Board**: Only if the student explicitly asks you to add, edit, rename, delete, reorder, or change priorities/status of steps, return an updated steps array.
-3. **Journal Reflection**: Read through their completed milestones and any creation journal notes they've saved. Synthesize and reflect on their progress, giving them insights on what they've achieved and how it builds their leadership profile.
+Completed steps: ${completedCount}. Notes: ${notesSummaryText || "none yet"}.
+Steps: ${JSON.stringify(project.steps)}
 
-INPUT DATA FOR CONTEXT:
-- Current project steps array: ${JSON.stringify(project.steps)}
-- Completed tasks count: ${completedCount}
-- Student's current diary journal notes:\n${notesSummaryText || "(No notes written yet)"}
+VOICE RULES — follow these strictly:
+- Write like a real person texting a smart friend. Short sentences. Conversational.
+- Max 2-3 sentences per reply. Never use bullet points or bold for regular chat.
+- No filler phrases: no "Great question!", no "Absolutely!", no "Of course!", no emojis unless truly needed.
+- If they ask something practical, give one clear answer then offer ONE small next step.
+- Never give a wall of text. If the answer needs more than 3 sentences, split it across 2 short paragraphs with a blank line between them.
+- Sound like you know their project specifically — use the project title and their cause naturally.
 
-OUTPUT FORMAT:
-You MUST respond with a JSON object containing EXACTLY these two keys. No markdown wrapping (like \`\`\`json) of the root response, return pure JSON:
-{
-  "reply": "A Markdown-formatted string containing your message to the student. Speak directly to them. Keep it within 2-4 engaging sentences or bullets.",
-  "updatedSteps": [...]
-}
-Note on "updatedSteps": For ordinary chat, questions, brainstorming, encouragement, explanations, or getting-started help, set "updatedSteps": null. Return the complete steps array ONLY if the student explicitly asks to add, edit, rename, delete, reorder, or change priorities/status of steps. Ensure new custom tasks set "custom": true, "notes": "", "status": "pending", "actionType": "draft", "id": "custom-" + random 5-char string, and assign a priority ("low" | "medium" | "high").
+ACTIONS:
+- Default: just chat.
+- Only update steps if student explicitly asks to add/edit/remove/reorder tasks. New tasks: custom=true, status="pending", actionType="draft", id="custom-"+5chars, priority="medium".
 
-Always output valid JSON.`;
+If you want to update the steps, you MUST output your conversational reply first. Then, AT THE VERY END of your message, output a JSON block wrapped in \`\`\`json ... \`\`\` with a single key "updatedSteps" containing the new array. Do NOT output JSON if you are just chatting.`;
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
 
     const chatHistory = (messages || []).slice(-8).map((m: any) => {
       const role = (m.sender === "student" || m.sender === "user") ? "user" : "model";
       return { role, parts: [{ text: m.text }] };
     });
 
-    const response = await client.models.generateContent({
+    const responseStream = await client.models.generateContentStream({
       model: "gemini-3.5-flash",
       contents: [
         ...chatHistory,
@@ -1966,16 +1973,50 @@ Always output valid JSON.`;
       ],
       config: {
         systemInstruction,
-        responseMimeType: "application/json",
       }
     });
 
-    const responseText = response.text || "{}";
+    let fullText = "";
+    let streamedText = "";
+    let isJsonBlockStarted = false;
+
+    for await (const chunk of responseStream) {
+      if (chunk.text) {
+        fullText += chunk.text;
+        
+        if (!isJsonBlockStarted && fullText.includes("```json")) {
+          isJsonBlockStarted = true;
+          // Send whatever text was before the json block
+          const beforeJson = fullText.split("```json")[0];
+          const newToStream = beforeJson.substring(streamedText.length);
+          if (newToStream) {
+            streamedText += newToStream;
+            res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
+          }
+        } else if (!isJsonBlockStarted) {
+          const newToStream = chunk.text;
+          streamedText += newToStream;
+          res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
+        }
+      }
+    }
+
+    let reply = streamedText.trim();
     let data: any = {};
-    try {
-      data = JSON.parse(responseText.trim().replace(/^```json/, "").replace(/```$/, ""));
-    } catch {
-      data = { reply: responseText.trim() };
+
+    if (isJsonBlockStarted) {
+      const jsonMatch = fullText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
+      if (jsonMatch && jsonMatch[1]) {
+        try {
+          data = JSON.parse(jsonMatch[1]);
+        } catch (e) {
+          console.error("Failed to parse JSON block from Co-Founder", e);
+        }
+      }
+    }
+
+    if (!reply) {
+      reply = "Awesome work! Let's keep building.";
     }
 
     if (data.updatedSteps && Array.isArray(data.updatedSteps)) {
@@ -1984,19 +2025,26 @@ Always output valid JSON.`;
       preserveCurrentStep(project, previousActiveTaskId);
     }
 
-    project.coFounderMessages = [...(messages || []), { sender: "agent", text: data.reply || "Awesome work! Let's keep building." }];
+    project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
     await saveSession(session);
-    res.json({
-      reply: data.reply || "Awesome work! Let's keep building.",
-      project
-    });
+    
+    res.write(`data: ${JSON.stringify({ type: "done", project, reply })}\n\n`);
+    res.end();
 
   } catch (error: any) {
     console.error("Chat to Edit endpoint failed; using practice reply.", error);
+    if (!res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+    }
     const reply = makePracticeCoFounderReply(message, session, project, opportunity);
     project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
     await saveSession(session);
-    res.json({ reply, project, fallback: true });
+    res.write(`data: ${JSON.stringify({ type: "chunk", text: reply })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "done", project, reply, fallback: true })}\n\n`);
+    res.end();
   }
 });
 
@@ -2025,6 +2073,12 @@ app.post("/api/project/approve-step", async (req, res) => {
   } else {
     // If we've finished all steps, keep the index at the last one
     project.stepIndex = project.steps.length; // signifies fully completed project
+    
+    // Mark corresponding opportunity as completed
+    const oppIndex = (session.opportunities || []).findIndex((o) => o.id === project.id);
+    if (oppIndex !== -1) {
+      session.opportunities[oppIndex].status = "completed";
+    }
   }
 
   await saveSession(session);

@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=Caveat:wght@600;700&display=swap');
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @theme {
   --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -77,3 +78,15 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(16, 185, 129, 0.4);
 }
+
+/* 
+  Fix: Elevate <main>'s z-index when a modal or drawer is active inside it.
+  Because <main> has a default stacking context of z-10, any fixed overlay inside it 
+  would normally render underneath the sticky <header> (z-50).
+  By using :has(), we dynamically raise <main> to z-60 when a modal/drawer is open.
+*/
+main:has([class*="fixed"][class*="z-[200]"]),
+main:has([class*="fixed"][class*="z-50"]:not([class*="pointer-events-none"])) {
+  z-index: 60;
+}
+

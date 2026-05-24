@@ -1,10 +1,22 @@
-import { SessionProfile } from "../types";
-import { motion } from "motion/react";
-import { User, Sparkles, Target, Activity, ArrowRight, Compass, ArrowLeft } from "lucide-react";
+import { SessionProfile, Opportunity } from "../types";
+import { motion, AnimatePresence } from "motion/react";
+import { User, Sparkles, Target, Activity, ArrowRight, Compass, ArrowLeft, Award } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
+import Badge from "./Badge";
+
+const ALL_BADGE_TYPES = [
+  { type: "oss-doc-pr", label: "Open Source Contributor", desc: "Contribute documentation PRs to open-source libraries" },
+  { type: "publish-essay", label: "Published Essayist", desc: "Write and publish persuasive essays on community boards" },
+  { type: "eco-campaign", label: "Eco Organizer", desc: "Launch ecological or environmental clean-air campaigns" },
+  { type: "code-widget", label: "Widget Developer", desc: "Build functional software and custom calculator widgets" },
+  { type: "wildlife-map", label: "Wildlife Cartographer", desc: "Create interactive mapping datasets for native wildlife" },
+  { type: "teach-skill", label: "Skill Educator", desc: "Teach practical digital and life skills to senior citizens" },
+];
 
 export default function Profile({ session, onRestart }: { session: SessionProfile | null; onRestart: () => void }) {
   const navigate = useNavigate();
+  const [selectedBadge, setSelectedBadge] = useState<Opportunity | null>(null);
 
   if (!session || !session.answers) {
     return (
@@ -157,6 +169,117 @@ export default function Profile({ session, onRestart }: { session: SessionProfil
           </motion.div>
         </div>
       </div>
+
+      {/* Art & Project Folder: Digital Badge Collection */}
+      <motion.div 
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="bg-white/80 backdrop-blur-md border border-emerald-100/50 rounded-3xl p-6 sm:p-8 shadow-xl mt-8 relative overflow-hidden"
+      >
+        <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-100/25 rounded-full blur-3xl -mr-16 -mt-16" />
+        <div className="absolute bottom-0 left-0 w-36 h-36 bg-amber-50/25 rounded-full blur-2xl -ml-10 -mb-10" />
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-orange-100/40 pb-5 mb-8 relative z-10">
+          <div className="flex items-center gap-3.5 text-left">
+            <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200/50 flex items-center justify-center shadow-sm">
+              <Award className="w-6 h-6 text-amber-500" />
+            </div>
+            <div>
+              <h3 className="font-display font-extrabold text-emerald-950 text-xl">Art & Project Folder</h3>
+              <p className="text-xs font-sans text-slate-500 mt-0.5">Your official digital badge and achievements collection</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200/40 uppercase tracking-wider">
+              Unlocked: {opportunities.filter(o => o.status === "completed").length} / {ALL_BADGE_TYPES.length} Badges
+            </span>
+          </div>
+        </div>
+
+        {/* Badge Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-8 justify-items-center relative z-10">
+          {ALL_BADGE_TYPES.map((b) => {
+            const completedProj = opportunities.find(o => o.type === b.type && o.status === "completed");
+            const isUnlocked = !!completedProj;
+
+            return (
+              <div 
+                key={b.type} 
+                onClick={() => isUnlocked && setSelectedBadge(completedProj)}
+                className={`flex flex-col items-center text-center group transition-all duration-300 ${
+                  isUnlocked ? "cursor-pointer" : "cursor-default"
+                }`}
+              >
+                {/* Badge Circle Wrapper with glow if unlocked */}
+                <div className="relative mb-3">
+                  {isUnlocked && (
+                    <div className="absolute inset-0 bg-amber-400/10 rounded-full blur-xl scale-125 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  )}
+                  <Badge type={b.type} size={90} locked={!isUnlocked} interactive={isUnlocked} />
+                </div>
+                
+                <h4 className="text-xs font-sans font-bold text-emerald-950 group-hover:text-emerald-700 transition-colors leading-tight mb-1">
+                  {b.label}
+                </h4>
+                <p className="text-[9.5px] font-mono text-slate-400 uppercase tracking-wide leading-none">
+                  {isUnlocked ? "🏆 Unlocked" : "🔒 Locked"}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Selected Unlocked Badge Modal / Drawer */}
+        <AnimatePresence>
+          {selectedBadge && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mt-8 pt-6 border-t border-orange-100/40 text-left relative z-10 overflow-hidden"
+            >
+              <div className="bg-emerald-50/45 border border-emerald-200/40 rounded-2xl p-5 sm:p-6 flex flex-col sm:flex-row gap-6 items-center">
+                <div className="shrink-0">
+                  <Badge type={selectedBadge.type} size={105} interactive={false} />
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono text-amber-700 uppercase tracking-widest font-extrabold block">
+                      OFFICIAL ACHIEVEMENT CERTIFICATE
+                    </span>
+                    <button 
+                      onClick={() => setSelectedBadge(null)}
+                      className="text-xs font-mono font-bold text-slate-400 hover:text-slate-600 transition uppercase cursor-pointer"
+                    >
+                      [ Close ]
+                    </button>
+                  </div>
+                  <h4 className="text-lg font-display font-extrabold text-emerald-950 leading-tight">
+                    {selectedBadge.title}
+                  </h4>
+                  <p className="text-xs text-slate-700 font-sans leading-relaxed">
+                    {selectedBadge.summary || selectedBadge.whyMatch}
+                  </p>
+                  <div className="pt-2 flex flex-wrap items-center gap-4">
+                    <a
+                      href={selectedBadge.type === "oss-doc-pr" ? "https://github.com/inaturalist/turtle-db/pull/6249" : `https://${selectedBadge.target}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-mono font-bold uppercase tracking-wider shadow-sm transition-all inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      Visit Project Page 🚀
+                    </a>
+                    <span className="text-[10px] font-mono text-emerald-800/70 uppercase">
+                      Target: <span className="font-bold">{selectedBadge.target}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
       
       {/* Footer Navigation */}
       <div className="mt-8 flex justify-between items-center px-2 border-t border-emerald-100/50 pt-4">

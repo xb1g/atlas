@@ -12,6 +12,8 @@ import ArtifactSuccess from "./components/ArtifactSuccess";
 import Reflection from "./components/Reflection";
 import Logo from "./components/Logo";
 import Profile from "./components/Profile";
+import ReactMarkdown from "react-markdown";
+import { MarkdownErrorBoundary } from "./components/MarkdownErrorBoundary";
 // @ts-ignore
 import monetBg from "./assets/images/monet_cliff_horizon_1779562138549.webp";
 
@@ -574,7 +576,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f7f5ee] text-slate-800 flex flex-col font-sans relative overflow-hidden" id="atlas-app-container">
+    <div className="h-screen h-[100dvh] bg-[#f7f5ee] text-slate-800 flex flex-col font-sans relative overflow-hidden" id="atlas-app-container">
 
       {/* 1. Immersive Full-Screen Impressionist blurred canvas underlayer */}
       <div
@@ -677,7 +679,7 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 px-4 sm:px-6 py-8 z-10 relative">
+      <main className="flex-1 overflow-y-auto custom-scrollbar px-4 sm:px-6 py-8 z-10 relative">
         <AnimatePresence mode="wait">
           <Routes location={location}>
             <Route
@@ -859,7 +861,11 @@ export default function App() {
                                     : "bg-white/95 border border-orange-100/80 text-emerald-950 rounded-br-sm"
                                 }`}
                               >
-                                {msg.text}
+                              <div className="prose prose-sm prose-emerald max-w-none text-current font-sans leading-relaxed">
+                                <MarkdownErrorBoundary fallbackText={msg.text}>
+                                  <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
+                                </MarkdownErrorBoundary>
+                              </div>
                               </div>
                             </div>
                           );
@@ -1008,12 +1014,13 @@ export default function App() {
                       <BlueprintPlan
                         opportunity={getSelectedOpp(routedProjectId)!}
                         project={(!session.activeProject || session.activeProject.id !== routedProjectId) ? null : session.activeProject}
-                        onUpdateProject={(updatedProject) => {
+                        onUpdateProject={(updater) => {
                           setSession((prev: any) => {
                             if (!prev) return prev;
+                            const nextProject = typeof updater === "function" ? updater(prev.activeProject) : updater;
                             return {
                               ...prev,
-                              activeProject: updatedProject
+                              activeProject: nextProject
                             };
                           });
                         }}
@@ -1108,10 +1115,11 @@ export default function App() {
                     onApproveStep={handleApproveStep}
                     isApproving={isApproving}
                     onBack={handleBackToMenu}
-                    onUpdateProject={(updatedProject) => {
+                    onUpdateProject={(updater) => {
                       setSession((prev: any) => {
                         if (!prev) return prev;
-                        return { ...prev, activeProject: updatedProject };
+                        const nextProject = typeof updater === "function" ? updater(prev.activeProject) : updater;
+                        return { ...prev, activeProject: nextProject };
                       });
                     }}
                   />

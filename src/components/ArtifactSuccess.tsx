@@ -2,6 +2,7 @@ import { Sparkles, ArrowUpRight, CheckCircle2, Award, Clipboard, Copy, Search, C
 import { useState } from "react";
 import { motion } from "motion/react";
 import { Opportunity, InterviewAnswers } from "../types";
+import Badge from "./Badge";
 
 interface ArtifactSuccessProps {
   opportunity: Opportunity;
@@ -34,10 +35,10 @@ export default function ArtifactSuccess({
     <div className="max-w-2xl mx-auto text-center py-6 sm:py-10 animate-fadeIn" id="artifact-success">
       
       {/* 1. Badge Accomplished Star Blast */}
-      <div className="relative inline-block mb-8">
-        <div className="absolute inset-0 bg-emerald-400/20 rounded-full blur-2xl animate-pulse" />
-        <div className="relative bg-white border border-emerald-200/50 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto shadow-lg hover:scale-105 transition duration-300">
-          <Award className="w-10 h-10 text-emerald-600" />
+      <div className="relative inline-block mb-6">
+        <div className="absolute inset-0 bg-emerald-400/25 rounded-full blur-2xl animate-pulse" />
+        <div className="relative mx-auto drop-shadow-xl hover:scale-105 transition-transform duration-300">
+          <Badge type={opportunity.type} size={140} interactive={true} />
         </div>
       </div>
 

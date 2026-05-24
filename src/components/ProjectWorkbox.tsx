@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { ActiveProject, ProjectStep, Opportunity } from "../types";
+import ReactMarkdown from "react-markdown";
+import { MarkdownErrorBoundary } from "./MarkdownErrorBoundary";
 
 interface ProjectWorkboxProps {
   project: ActiveProject;
@@ -442,18 +444,47 @@ export default function ProjectWorkbox({
           messages: updatedMessages
         })
       });
-      const data = await res.json();
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) return;
 
-      if (data.reply) {
-        setChatMessages((prev) => [...prev, { sender: "agent", text: data.reply }]);
+      let buffer = "";
+      let partialReply = "";
+      setChatMessages((prev) => [...prev, { sender: "agent", text: "" }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
         
-        // If Gemini returned mutated steps, sync them instantly!
-        if (data.project && data.project.steps) {
-          onUpdateProject(data.project);
-          playNotificationChime();
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+          const chunkStr = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
           
-          // Flash sparkles on board to highlight AI change!
-          triggerConfetti();
+          if (chunkStr.startsWith("data: ")) {
+            const dataStr = chunkStr.substring(6);
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === "chunk") {
+                partialReply += data.text;
+                setChatMessages((prev) => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1].text = partialReply;
+                  return newMsgs;
+                });
+              } else if (data.type === "done") {
+                if (data.project && data.project.steps) {
+                  onUpdateProject(data.project);
+                  playNotificationChime();
+                  triggerConfetti();
+                }
+              }
+            } catch (e) {
+              console.error("SSE parse error", e, chunkStr);
+            }
+          }
+          boundary = buffer.indexOf('\n\n');
         }
       }
     } catch (err) {
@@ -472,16 +503,20 @@ export default function ProjectWorkbox({
     setTutorInput("");
     setIsTutorTyping(true);
 
-    const optimisticMessages = [
-      ...(activeTask.tutorMessages ?? []),
-      { sender: "student" as const, text: studentMessage }
-    ];
-    onUpdateProject({
-      ...project,
-      steps: project.steps.map((step) =>
-        step.id === activeTask.id ? { ...step, tutorMessages: optimisticMessages } : step
+    onUpdateProject((prev: any) => ({
+      ...prev,
+      steps: prev.steps.map((step: any) =>
+        step.id === activeTask.id
+          ? {
+              ...step,
+              tutorMessages: [
+                ...(step.tutorMessages ?? []),
+                { sender: "student" as const, text: studentMessage }
+              ]
+            }
+          : step
       )
-    });
+    }));
 
     const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
     try {
@@ -497,29 +532,94 @@ export default function ProjectWorkbox({
         })
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Task tutor request failed");
-      }
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error("No reader from task tutor response");
 
-      if (data.project) {
-        onUpdateProject(data.project);
+      let buffer = "";
+      let partialReply = "";
+      
+      // Optimistically insert an empty agent message to stream into
+      const initialAgentMessage = { sender: "agent" as const, text: "" };
+      onUpdateProject((prev: any) => ({
+        ...prev,
+        steps: prev.steps.map((step: any) =>
+          step.id === activeTask.id
+            ? {
+                ...step,
+                tutorMessages: [...(step.tutorMessages ?? []), initialAgentMessage]
+              }
+            : step
+        )
+      }));
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+          const chunkStr = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          
+          if (chunkStr.startsWith("data: ")) {
+            const dataStr = chunkStr.substring(6);
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === "chunk") {
+                partialReply += data.text;
+                // update the specific tutor message array locally for UI feel without a full project state roundtrip if possible
+                // but since we only have onUpdateProject, we have to call it
+                onUpdateProject((prev: any) => ({
+                  ...prev,
+                  steps: prev.steps.map((step: any) => {
+                    if (step.id === activeTask.id) {
+                      const msgs = step.tutorMessages ? [...step.tutorMessages] : [];
+                      if (msgs.length > 0) {
+                        const newMsgs = [...msgs];
+                        newMsgs[newMsgs.length - 1] = {
+                          ...newMsgs[newMsgs.length - 1],
+                          text: partialReply
+                        };
+                        return { ...step, tutorMessages: newMsgs };
+                      }
+                      return { ...step, tutorMessages: msgs };
+                    }
+                    return step;
+                  })
+                }));
+              } else if (data.type === "done") {
+                if (data.project) {
+                  onUpdateProject(data.project);
+                }
+              }
+            } catch (e) {
+              console.error("SSE parse error in task tutor", e, chunkStr);
+            }
+          }
+          boundary = buffer.indexOf('\n\n');
+        }
       }
     } catch (err) {
       console.error("Task tutor chat failed", err);
-      const fallbackMessages = [
-        ...optimisticMessages,
-        {
-          sender: "agent" as const,
-          text: "Hmm, I couldn't get a reply just now. Your question was sent — please try again in a moment!"
-        }
-      ];
-      onUpdateProject({
-        ...project,
-        steps: project.steps.map((step) =>
-          step.id === activeTask.id ? { ...step, tutorMessages: fallbackMessages } : step
+      onUpdateProject((prev: any) => ({
+        ...prev,
+        steps: prev.steps.map((step: any) =>
+          step.id === activeTask.id
+            ? {
+                ...step,
+                tutorMessages: [
+                  ...(step.tutorMessages ?? []).filter((m: any) => m.text !== ""),
+                  {
+                    sender: "agent" as const,
+                    text: "Hmm, I couldn't get a reply just now. Your question was sent — please try again in a moment!"
+                  }
+                ]
+              }
+            : step
         )
-      });
+      }));
     } finally {
       setIsTutorTyping(false);
     }
@@ -671,10 +771,10 @@ export default function ProjectWorkbox({
       </div>
 
       {/* 4. MAIN WORKSPACE PANELS GRID */}
-      <div className={`grid grid-cols-1 ${isChatOpen ? "lg:grid-cols-12" : "grid-cols-1"} gap-8 items-start`}>
+      <div className="flex gap-8 items-start relative">
         
-        {/* Left/Center Main Side (span 8 if chat open, else full) */}
-        <div className={`${isChatOpen ? "lg:col-span-8" : "w-full"} flex flex-col gap-6`}>
+        {/* Left/Center Main Side */}
+        <div className="w-full flex flex-col gap-6 min-w-0">
           <AnimatePresence mode="wait">
             
             {/* TAB A: KANBAN SPRINT BOARD */}
@@ -912,6 +1012,28 @@ export default function ProjectWorkbox({
                         <span>Make This Step Real! ✨</span>
                         <ArrowRight className="w-3.5 h-3.5 text-white" />
                       </button>
+
+                      {/* Builder Diary / Submission Notes */}
+                      <div className="mt-5">
+                        <label className="text-[9px] font-mono uppercase text-emerald-800/70 tracking-widest font-bold block mb-2">
+                          My Work Log — visible to AI Co-Founder
+                        </label>
+                        <textarea
+                          value={activeStep?.notes || ""}
+                          onChange={(e) => {
+                            if (!activeStep?.id) return;
+                            const updatedSteps = project.steps.map((s) =>
+                              s.id === activeStep.id ? { ...s, notes: e.target.value } : s
+                            );
+                            onUpdateProject({ ...project, steps: updatedSteps });
+                            // Debounced sync to server
+                            handleUpdateTaskDetails(activeStep.id, { notes: e.target.value });
+                          }}
+                          placeholder="Describe what you built, what you learned, blockers you hit, or questions for your AI co-founder..."
+                          rows={6}
+                          className="w-full p-3.5 bg-white/80 border border-emerald-100 rounded-2xl text-slate-800 focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-300/30 font-sans leading-relaxed text-[11px] shadow-inner placeholder-slate-400/70 text-left resize-none"
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -1005,9 +1127,9 @@ export default function ProjectWorkbox({
           </AnimatePresence>
         </div>
 
-        {/* Right Chat Column (span 4) if AI Co-Founder is active */}
+        {/* Right Chat Column if AI Co-Founder is active */}
         {isChatOpen && (
-          <div className="lg:col-span-4 bg-white/80 border border-indigo-100/50 rounded-3xl p-4 flex flex-col h-[580px] shadow-lg backdrop-blur-md justify-between animate-fadeIn border-l-2 border-l-indigo-400/25 text-left">
+          <div className="fixed bottom-6 right-6 z-[100] w-[380px] bg-white/95 border border-indigo-200/60 rounded-3xl p-4 flex flex-col h-[600px] max-h-[85vh] shadow-2xl backdrop-blur-xl justify-between animate-fadeIn border-t-4 border-t-indigo-500 text-left">
             {/* Chat header */}
             <div className="flex items-center justify-between border-b border-indigo-100/30 pb-2.5 shrink-0">
               <div className="flex items-center gap-2">
@@ -1045,7 +1167,11 @@ export default function ProjectWorkbox({
                           : "bg-white border border-orange-100/80 text-emerald-950 rounded-br-sm shadow-sm"
                       }`}
                     >
-                      {msg.text}
+                      <div className="prose prose-sm prose-emerald max-w-none text-current font-sans leading-relaxed">
+                        <MarkdownErrorBoundary fallbackText={msg.text}>
+                          <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
+                        </MarkdownErrorBoundary>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1382,7 +1508,11 @@ export default function ProjectWorkbox({
                             ? "bg-white border border-indigo-100 text-indigo-950 rounded-bl-sm"
                             : "bg-emerald-600 text-white rounded-br-sm"
                         }`}>
-                          {msg.text}
+                          <div className="prose prose-sm prose-emerald max-w-none text-current font-sans leading-relaxed">
+                            <MarkdownErrorBoundary fallbackText={msg.text}>
+                              <ReactMarkdown>{msg.text || ""}</ReactMarkdown>
+                            </MarkdownErrorBoundary>
+                          </div>
                         </div>
                       </div>
                     );

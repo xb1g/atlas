@@ -221,7 +221,7 @@ export default function InterviewForm({ onSuccess, isLoading }: InterviewFormPro
   };
 
   // Slide Variants for beautiful card transitions
-  const slideVariants = {
+  const slideVariants: any = {
     enter: (dir: number) => ({
       x: dir > 0 ? 120 : -100,
       opacity: 0,
