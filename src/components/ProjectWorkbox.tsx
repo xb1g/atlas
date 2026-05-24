@@ -13,7 +13,7 @@ interface ProjectWorkboxProps {
   onApproveStep: () => void;
   isApproving: boolean;
   onBack: () => void;
-  onUpdateProject?: (updatedProject: ActiveProject) => void;
+  onUpdateProject: (updatedProject: ActiveProject) => void;
 }
 
 export default function ProjectWorkbox({
@@ -44,12 +44,16 @@ export default function ProjectWorkbox({
   const [isTutorTyping, setIsTutorTyping] = useState(false);
 
   // AI Co-Founder Chat states
-  const [chatMessages, setChatMessages] = useState<{ sender: "agent" | "student"; text: string }[]>([
-    {
-      sender: "agent",
-      text: `Hey co-founder! 🌟 We're working on "${opportunity.title}" together. I've designed our active steps on our Kanban board! You can ask me to add custom tasks (e.g. "add task to interview friends"), adjust priorities, or reflect on your project journal. What should we focus on?`
-    }
-  ]);
+  const [chatMessages, setChatMessages] = useState<{ sender: "agent" | "student"; text: string }[]>(
+    project.coFounderMessages && project.coFounderMessages.length > 0
+      ? project.coFounderMessages
+      : [
+          {
+            sender: "agent",
+            text: `Hey co-founder! 🌟 We're working on "${opportunity.title}" together. I've designed our active steps on our Kanban board! You can ask me to add custom tasks (e.g. "add task to interview friends"), adjust priorities, or reflect on your project journal. What should we focus on?`
+          }
+        ]
+  );
   const [chatInput, setChatInput] = useState("");
   const [isAgentTyping, setIsAgentTyping] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -77,6 +81,41 @@ export default function ProjectWorkbox({
       setSelectedTaskId(null);
     }
   }, [project.steps, selectedTaskId]);
+
+  useEffect(() => {
+    const seenIds = new Set<string>();
+    let changed = false;
+    const stepsWithIds = project.steps.map((step, idx) => {
+      let id = step.id;
+      if (!id || seenIds.has(id)) {
+        id = `${project.id}-step-${idx}`;
+        changed = true;
+      }
+      seenIds.add(id);
+      if (step.tutorMessages === undefined) changed = true;
+      return {
+        ...step,
+        id,
+        tutorMessages: step.tutorMessages ?? []
+      };
+    });
+
+    if (changed) {
+      onUpdateProject({
+        ...project,
+        steps: stepsWithIds
+      });
+      const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+      fetch("/api/project/update-steps", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-session-id": sessionId
+        },
+        body: JSON.stringify({ steps: stepsWithIds })
+      }).catch((e) => console.error("Failed to normalize task ids in Firebase", e));
+    }
+  }, [onUpdateProject, project]);
 
   // Find physical active step shown in Terminal
   const isCompletedProject = currentStepIndex >= project.steps.length;
@@ -258,7 +297,25 @@ export default function ProjectWorkbox({
     };
 
     const updatedSteps = [...project.steps, newStep];
-    syncStepsToDb(updatedSteps);
+    onUpdateProject({
+      ...project,
+      steps: updatedSteps
+    });
+
+    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+    fetch("/api/project/add-task", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-session-id": sessionId
+      },
+      body: JSON.stringify({ task: newStep })
+    })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.project) onUpdateProject(data.project);
+      })
+      .catch((e) => console.error("Failed to add custom task in Firebase", e));
 
     // Reset Form
     setNewTaskTitle("");
@@ -271,7 +328,7 @@ export default function ProjectWorkbox({
   // Delete custom sprint task
   const handleDeleteCustomTask = (id: string) => {
     const updatedSteps = project.steps.filter(s => s.id !== id);
-    onUpdateProject?.({
+    onUpdateProject({
       ...project,
       steps: updatedSteps
     });
@@ -289,7 +346,7 @@ export default function ProjectWorkbox({
     })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (data?.project) onUpdateProject?.(data.project);
+        if (data?.project) onUpdateProject(data.project);
       })
       .catch((e) => console.error("Failed to delete custom task in Firebase", e));
   };
@@ -302,7 +359,7 @@ export default function ProjectWorkbox({
       }
       return s;
     });
-    onUpdateProject?.({
+    onUpdateProject({
       ...project,
       steps: updatedSteps
     });
@@ -316,10 +373,6 @@ export default function ProjectWorkbox({
       },
       body: JSON.stringify({ taskId: id, updates })
     })
-      .then((res) => res.ok ? res.json() : null)
-      .then((data) => {
-        if (data?.project) onUpdateProject?.(data.project);
-      })
       .catch((e) => console.error("Failed to patch task in Firebase", e));
   };
 
@@ -336,7 +389,7 @@ export default function ProjectWorkbox({
       return s;
     });
 
-    onUpdateProject?.({
+    onUpdateProject({
       ...project,
       steps: updatedSteps
     });
@@ -352,7 +405,7 @@ export default function ProjectWorkbox({
     })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (data?.project) onUpdateProject?.(data.project);
+        if (data?.project) onUpdateProject(data.project);
       })
       .catch((e) => console.error("Failed to move task in Firebase", e));
 
@@ -396,7 +449,7 @@ export default function ProjectWorkbox({
         
         // If Gemini returned mutated steps, sync them instantly!
         if (data.project && data.project.steps) {
-          onUpdateProject?.(data.project);
+          onUpdateProject(data.project);
           playNotificationChime();
           
           // Flash sparkles on board to highlight AI change!
@@ -423,7 +476,7 @@ export default function ProjectWorkbox({
       ...(activeTask.tutorMessages ?? []),
       { sender: "student" as const, text: studentMessage }
     ];
-    onUpdateProject?.({
+    onUpdateProject({
       ...project,
       steps: project.steps.map((step) =>
         step.id === activeTask.id ? { ...step, tutorMessages: optimisticMessages } : step
@@ -450,7 +503,7 @@ export default function ProjectWorkbox({
       }
 
       if (data.project) {
-        onUpdateProject?.(data.project);
+        onUpdateProject(data.project);
       }
     } catch (err) {
       console.error("Task tutor chat failed", err);
@@ -458,10 +511,10 @@ export default function ProjectWorkbox({
         ...optimisticMessages,
         {
           sender: "agent" as const,
-          text: "I could not save that tutoring turn yet. Your question is still here, so try sending it again in a moment."
+          text: "Hmm, I couldn't get a reply just now. Your question was sent — please try again in a moment!"
         }
       ];
-      onUpdateProject?.({
+      onUpdateProject({
         ...project,
         steps: project.steps.map((step) =>
           step.id === activeTask.id ? { ...step, tutorMessages: fallbackMessages } : step
@@ -664,14 +717,17 @@ export default function ProjectWorkbox({
                     </div>
 
                     <div className="flex-1 space-y-3 overflow-y-auto max-h-[580px] custom-scrollbar pr-1">
-                      {project.steps.filter(s => s.status === "pending").map((step) => (
-                        <KanbanCard 
-                          key={step.id} 
-                          step={step} 
-                          onInspect={setSelectedTaskId} 
-                          onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
-                        />
-                      ))}
+                      {project.steps.filter(s => s.status === "pending").map((step, idx) => {
+                        const stepId = step.id ?? `${project.id}-step-${project.steps.findIndex((candidate) => candidate === step)}`;
+                        return (
+                          <KanbanCard
+                            key={stepId}
+                            step={{ ...step, id: stepId }}
+                            onInspect={setSelectedTaskId}
+                            onMove={(newStat) => handleMoveColumn(stepId, newStat)}
+                          />
+                        );
+                      })}
                       {project.steps.filter(s => s.status === "pending").length === 0 && (
                         <div className="border border-dashed border-slate-300/40 rounded-2xl py-8 text-center text-slate-400 font-sans text-xs italic bg-slate-50/20">
                           Empty backlog list.
@@ -693,14 +749,17 @@ export default function ProjectWorkbox({
                     </div>
 
                     <div className="flex-1 space-y-3 overflow-y-auto max-h-[580px] custom-scrollbar pr-1">
-                      {project.steps.filter(s => s.status === "running" || s.status === "approved").map((step) => (
-                        <KanbanCard 
-                          key={step.id} 
-                          step={step} 
-                          onInspect={setSelectedTaskId} 
-                          onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
-                        />
-                      ))}
+                      {project.steps.filter(s => s.status === "running" || s.status === "approved").map((step, idx) => {
+                        const stepId = step.id ?? `${project.id}-step-${project.steps.findIndex((candidate) => candidate === step)}`;
+                        return (
+                          <KanbanCard
+                            key={stepId}
+                            step={{ ...step, id: stepId }}
+                            onInspect={setSelectedTaskId}
+                            onMove={(newStat) => handleMoveColumn(stepId, newStat)}
+                          />
+                        );
+                      })}
                       {project.steps.filter(s => s.status === "running" || s.status === "approved").length === 0 && (
                         <div className="border border-dashed border-amber-300/30 rounded-2xl py-8 text-center text-amber-700/40 font-sans text-xs italic bg-amber-50/10">
                           Click step on Story Quest Map or drag a card here to start working!
@@ -722,14 +781,17 @@ export default function ProjectWorkbox({
                     </div>
 
                     <div className="flex-1 space-y-3 overflow-y-auto max-h-[580px] custom-scrollbar pr-1">
-                      {project.steps.filter(s => s.status === "completed").map((step) => (
-                        <KanbanCard 
-                          key={step.id} 
-                          step={step} 
-                          onInspect={setSelectedTaskId} 
-                          onMove={(newStat) => handleMoveColumn(step.id!, newStat)}
-                        />
-                      ))}
+                      {project.steps.filter(s => s.status === "completed").map((step, idx) => {
+                        const stepId = step.id ?? `${project.id}-step-${project.steps.findIndex((candidate) => candidate === step)}`;
+                        return (
+                          <KanbanCard
+                            key={stepId}
+                            step={{ ...step, id: stepId }}
+                            onInspect={setSelectedTaskId}
+                            onMove={(newStat) => handleMoveColumn(stepId, newStat)}
+                          />
+                        );
+                      })}
                       {project.steps.filter(s => s.status === "completed").length === 0 && (
                         <div className="border border-dashed border-emerald-300/30 rounded-2xl py-8 text-center text-emerald-700/40 font-sans text-xs italic bg-emerald-50/10">
                           Complete some tasks to earn Spark XP and Level Up! 🌟
@@ -828,6 +890,18 @@ export default function ProjectWorkbox({
 
                       <button
                         onClick={() => {
+                          if (activeStep?.id && activeStep.status !== "completed") {
+                            const updatedSteps = project.steps.map((s, idx) => {
+                              if (s.id === activeStep.id) return { ...s, status: "completed" as const };
+                              if (idx === currentStepIndex + 1) return { ...s, status: "running" as const };
+                              return s;
+                            });
+                            onUpdateProject({
+                              ...project,
+                              steps: updatedSteps,
+                              stepIndex: Math.min(currentStepIndex + 1, project.steps.length)
+                            });
+                          }
                           onApproveStep();
                           triggerConfetti();
                         }}
@@ -1140,11 +1214,11 @@ export default function ProjectWorkbox({
       {/* 6. TASK SPLIT WORKSPACE DRAWER */}
       <AnimatePresence>
         {selectedTask && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] z-50">
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] z-[200]">
             <button
               type="button"
               aria-label="Close task workspace"
-              className="absolute inset-0 w-full h-full cursor-default"
+              className="absolute inset-0 w-full h-full cursor-default bg-transparent border-0"
               onClick={() => setSelectedTaskId(null)}
             />
             <motion.aside
@@ -1152,7 +1226,7 @@ export default function ProjectWorkbox({
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: "100%", opacity: 0.98 }}
               transition={{ type: "spring", stiffness: 260, damping: 30 }}
-              className="absolute right-0 top-0 h-full w-full lg:w-[72vw] xl:w-[64vw] bg-[#fffdf9] border-l border-orange-100 shadow-2xl text-left grid grid-cols-1 md:grid-cols-2 overflow-hidden"
+              className="absolute right-0 top-0 h-full w-full lg:w-[72vw] xl:w-[64vw] bg-[#fffdf9] border-l border-orange-100 shadow-2xl text-left grid grid-cols-1 md:grid-cols-2 overflow-y-auto md:overflow-hidden"
             >
               <button
                 onClick={() => setSelectedTaskId(null)}
@@ -1162,7 +1236,7 @@ export default function ProjectWorkbox({
                 <X className="w-5 h-5" />
               </button>
 
-              <section className="h-full overflow-y-auto custom-scrollbar p-5 sm:p-7 md:border-r border-orange-100/70">
+              <section className="min-h-screen md:h-full overflow-y-auto custom-scrollbar p-5 sm:p-7 md:border-r border-orange-100/70">
                 <div className="pr-10">
                   <div className="flex flex-wrap items-center gap-2 mb-3">
                     <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-md border tracking-wider capitalize ${
@@ -1277,7 +1351,7 @@ export default function ProjectWorkbox({
                 </div>
               </section>
 
-              <section className="h-full bg-[#f8fafc] flex flex-col min-h-0">
+              <section className="min-h-screen md:h-full bg-[#f8fafc] flex flex-col md:min-h-0">
                 <div className="p-5 sm:p-7 border-b border-slate-200/80 pr-16">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/15">
@@ -1465,7 +1539,11 @@ function KanbanCard({ step, onInspect, onMove }: KanbanCardProps) {
         <div className="flex items-center gap-1">
           {isPending && (
             <button
-              onClick={() => onMove("running")}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMove("running");
+              }}
               className="h-6 px-2 bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-sans font-extrabold rounded-lg flex items-center gap-0.5 active:scale-95 transition cursor-pointer"
             >
               <span>Work</span>
@@ -1476,13 +1554,21 @@ function KanbanCard({ step, onInspect, onMove }: KanbanCardProps) {
           {isWorking && (
             <div className="flex gap-1">
               <button
-                onClick={() => onMove("pending")}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMove("pending");
+                }}
                 className="h-6 px-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-[9px] font-sans font-bold rounded-lg active:scale-95 transition cursor-pointer border border-slate-200/40"
               >
                 Back
               </button>
               <button
-                onClick={() => onMove("completed")}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMove("completed");
+                }}
                 className="h-6 px-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[9px] font-sans font-extrabold rounded-lg flex items-center gap-0.5 active:scale-95 transition cursor-pointer"
               >
                 <span>Done</span>
@@ -1493,7 +1579,11 @@ function KanbanCard({ step, onInspect, onMove }: KanbanCardProps) {
 
           {isDone && (
             <button
-              onClick={() => onMove("running")}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMove("running");
+              }}
               className="h-6 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-500 text-[9px] font-sans font-bold rounded-lg active:scale-95 transition cursor-pointer border border-slate-200"
             >
               Reopen

@@ -106,14 +106,14 @@ export function loadLock(projectRoot) {
 /**
  * Check whether a skill directory belongs to Impeccable. Three layered
  * signals, in order of reliability:
- *   1. Lock source equals "pbakaus/impeccable" (authoritative).
+ *   1. Lock source equals "atlas/design-system" (authoritative).
  *   2. SKILL.md body contains the word "impeccable".
  *   3. SKILL.md body contains a per-skill fingerprint (for harden and
  *      optimize, whose v2.x SKILL.md never mentioned the pack name).
  */
 export function isImpeccableSkill(skillDir, { skillName, lock } = {}) {
   // 1. Authoritative: the lock file claims this skill is ours.
-  if (skillName && lock?.skills?.[skillName]?.source === 'pbakaus/impeccable') {
+  if (skillName && lock?.skills?.[skillName]?.source === 'atlas/design-system') {
     return true;
   }
   const skillMd = join(skillDir, 'SKILL.md');
@@ -215,7 +215,7 @@ export function removeDeprecatedSkills(projectRoot, lock) {
 
 /**
  * Remove deprecated entries from skills-lock.json.
- * Only removes entries whose source is "pbakaus/impeccable".
+ * Only removes entries whose source is "atlas/design-system".
  * Returns the list of removed skill names.
  */
 export function cleanSkillsLock(projectRoot) {
@@ -238,7 +238,7 @@ export function cleanSkillsLock(projectRoot) {
     const entry = lock.skills[name];
     if (!entry) continue;
     // Only remove if it belongs to impeccable
-    if (entry.source === 'pbakaus/impeccable') {
+    if (entry.source === 'atlas/design-system') {
       delete lock.skills[name];
       removed.push(name);
     }

@@ -3,11 +3,8 @@ import path from "path";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
-const { initializeApp } = require("firebase/app");
-const { getFirestore, doc, getDoc, setDoc } = require("firebase/firestore");
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 dotenv.config();
 
@@ -81,22 +78,66 @@ interface SessionProfile {
 }
 
 type ProjectStepData = NonNullable<SessionProfile["activeProject"]>["steps"][number];
+type ActiveProjectData = NonNullable<SessionProfile["activeProject"]>;
 
 function mergeIncomingSteps(currentSteps: ProjectStepData[], incomingSteps: ProjectStepData[]) {
   const existingById = new Map(currentSteps.filter((step) => step.id).map((step) => [step.id, step]));
 
   return incomingSteps.map((incoming, idx) => {
     const existing = incoming.id ? existingById.get(incoming.id) : currentSteps[idx];
-    const existingTutorMessages = existing?.tutorMessages ?? [];
-    const incomingTutorMessages = incoming.tutorMessages ?? [];
     return {
       ...existing,
       ...incoming,
-      tutorMessages: existingTutorMessages.length > incomingTutorMessages.length
-        ? existingTutorMessages
-        : incoming.tutorMessages ?? existingTutorMessages,
+      tutorMessages: existing ? existing.tutorMessages ?? [] : incoming.tutorMessages ?? [],
     };
   });
+}
+
+function preserveCurrentStep(project: ActiveProjectData, previousActiveTaskId?: string) {
+  if (previousActiveTaskId) {
+    const nextIndex = project.steps.findIndex((step) => step.id === previousActiveTaskId);
+    if (nextIndex !== -1) {
+      project.stepIndex = nextIndex;
+      return;
+    }
+  }
+
+  if (project.stepIndex >= project.steps.length) {
+    project.stepIndex = Math.max(0, project.steps.length - 1);
+  }
+}
+
+function normalizeProjectSteps(session: SessionProfile) {
+  if (!session.activeProject) return false;
+
+  let changed = false;
+  const seenIds = new Set<string>();
+  session.activeProject.steps = session.activeProject.steps.map((step, idx) => {
+    let id = step.id;
+    if (!id || seenIds.has(id)) {
+      id = `${session.activeProject!.id}-step-${idx}`;
+      changed = true;
+    }
+    seenIds.add(id);
+
+    const tutorMessages = step.tutorMessages ?? [];
+    if (!step.id || step.tutorMessages === undefined) {
+      changed = true;
+    }
+
+    return {
+      ...step,
+      id,
+      tutorMessages,
+    };
+  });
+
+  if (session.activeProject.stepIndex > session.activeProject.steps.length) {
+    session.activeProject.stepIndex = session.activeProject.steps.length;
+    changed = true;
+  }
+
+  return changed;
 }
 
 function makePracticeTutorReply(
@@ -129,6 +170,29 @@ function makePracticeTutorReply(
   }
 
   return `For **${task.title}**, I would keep this focused and practical: define the outcome, make the smallest useful version, then record one diary note about what you learned. Tell me where you feel stuck and I will break it into the next 2-3 moves.`;
+}
+
+function makePracticeCoFounderReply(message: string, session: SessionProfile, project: ActiveProjectData, opportunity: any) {
+  const textLower = (message || "").toLowerCase();
+  const name = session.answers.name || "there";
+  const activeTask = project.steps.find((step) => step.status === "pending" || step.status === "running" || step.status === "approved")
+    || project.steps[project.stepIndex]
+    || project.steps[0];
+
+  if (textLower.includes("start") || textLower.includes("begin") || textLower.includes("stuck") || textLower.includes("don't know") || textLower.includes("dont know")) {
+    return `Start with the first visible milestone: **${activeTask?.title || opportunity.title}**.\n\n1. Open that card on the board.\n2. Write one diary sentence about what you think the task is asking for.\n3. Ask the Personal AI Tutor inside that card: "How do I get started on this?"\n\nFor this project, the goal is not to know everything upfront. The goal is to make the next tiny move.`;
+  }
+
+  if (textLower.includes("reflect") || textLower.includes("review") || textLower.includes("notes") || textLower.includes("done")) {
+    const completedCount = project.steps.filter(s => s.status === "completed").length;
+    const notesWithContent = project.steps.filter(s => s.notes && s.notes.trim().length > 0);
+    const notesSummary = notesWithContent.map(s => `- **${s.title}**: ${s.notes}`).join("\n");
+    return completedCount === 0
+      ? `You are at the starting line, ${name}. Pick one card, make it "Working On", and write the first diary note. That creates momentum.`
+      : `You have completed **${completedCount} milestone(s)** so far.\n\n${notesSummary || "Add a short diary note to a completed card, then I can help you turn it into a stronger reflection."}`;
+  }
+
+  return `Good question, ${name}. For **${opportunity.title}**, I would pick one card, move it to **Working On**, and use the card's Personal AI Tutor for the exact next step. The board-level chat can help plan the sprint; the task tutor helps you do the work.`;
 }
 
 
@@ -167,7 +231,11 @@ async function getSession(id: string): Promise<SessionProfile> {
       const docRef = doc(db, "sessions", id);
       const snap = await getDoc(docRef);
       if (snap.exists()) {
-        return snap.data() as SessionProfile;
+        const session = snap.data() as SessionProfile;
+        if (normalizeProjectSteps(session)) {
+          await setDoc(docRef, session);
+        }
+        return session;
       }
     } catch(e) { 
       console.error("Firestore get error", e); 
@@ -193,16 +261,40 @@ async function getSession(id: string): Promise<SessionProfile> {
       activeProject: null,
     };
   }
+  normalizeProjectSteps(activeSessions[id]);
   return activeSessions[id];
 }
 
 async function saveSession(session: SessionProfile) {
   if (db) {
     try {
+      // Firestore max doc = 1MB. Strip all large binary/preview fields before writing.
+      const firestoreSession = {
+        ...session,
+        opportunities: session.opportunities.map((o: any) => {
+          const { imageUrl, ...rest } = o;
+          return imageUrl ? { ...rest, status: "planned" } : rest;
+        }),
+        activeProject: session.activeProject ? {
+          ...session.activeProject,
+          steps: session.activeProject.steps.map((step: any) => {
+            const { payload, tutorMessages, ...rest } = step;
+            // Keep only lightweight payload fields (destUrl, diffHeader)
+            const slimPayload = payload ? {
+              ...(payload.destUrl ? { destUrl: payload.destUrl } : {}),
+              ...(payload.diffHeader ? { diffHeader: payload.diffHeader } : {}),
+            } : undefined;
+            return {
+              ...rest,
+              ...(slimPayload && Object.keys(slimPayload).length > 0 ? { payload: slimPayload } : {}),
+            };
+          }),
+        } : null,
+      };
       const docRef = doc(db, "sessions", session.id);
-      await setDoc(docRef, session);
-    } catch(e) { 
-      console.error("Firestore save error", e); 
+      await setDoc(docRef, firestoreSession);
+    } catch(e) {
+      console.error("Firestore save error", e);
     }
   } else {
     activeSessions[session.id] = session;
@@ -508,13 +600,13 @@ function getPrebuiltMockOpportunities(answers: SessionProfile["answers"]) {
         id: "teach-skill-explorer",
         type: "teach-skill",
         title: "Design Better Buttons for Kids: Simple Screen Spacing Guideline",
-        target: "github.com/pbakaus/impeccable/issues/12",
+        target: "atlas/design-system",
         impact: "Interface Usability Governance",
         difficulty: "Mobile Usability Rule Spec",
         summary: `Help write an official design instruction guide enforcing large touch target sizes and cozy padding ratios in modern frontend interfaces, helping AI agents build safer layouts.`,
         whyMatch: `Badly spaced buttons are AI-slop design bugs. Your guidelines help developers write clean, touch-friendly, high-accessibility UI widgets, ${n}!`,
         estimatedMinutes: 20,
-        sourceUrl: "https://github.com/pbakaus/impeccable",
+        sourceUrl: "./DESIGN.md",
         complexity: "Teaches mobile target specifications, accessibility (a11y) spacing tokens, and clean design systems logic.",
         imageUrl: ""
       }
@@ -596,13 +688,13 @@ function getPrebuiltMockOpportunities(answers: SessionProfile["answers"]) {
         id: "teach-skill-champion",
         type: "teach-skill",
         title: "Govern AI UI Layout Spacing: Strict Interface Spacing Audit Specification",
-        target: "github.com/pbakaus/impeccable/issues/12",
+        target: "atlas/design-system",
         impact: "Design System Governance Spec",
         difficulty: "Comprehensive UI/UX Audit Specification",
         summary: `Compile a strict, markdown-formatted design audit spec establishing exact pixel-level touch targets, padding tokens, and interactive guidelines to prevent low-quality UI generation.`,
-        whyMatch: `Defining design system constraints is a critical design-engineering governance skill. Your specification establishes automated compliance rules for pbakaus/impeccable, ${n}.`,
+        whyMatch: `Defining design system constraints is a critical design-engineering governance skill. Your specification establishes automated compliance rules for Atlas, ${n}.`,
         estimatedMinutes: 40,
-        sourceUrl: "https://github.com/pbakaus/impeccable",
+        sourceUrl: "./DESIGN.md",
         complexity: "Structures strict layout specs, mobile tap target ratios, contrast variables, and automated prompt engineering specifications.",
         imageUrl: ""
       }
@@ -684,13 +776,13 @@ function getPrebuiltMockOpportunities(answers: SessionProfile["answers"]) {
         id: "teach-skill-hacker",
         type: "teach-skill",
         title: "Harden Mobile Target Spacing: Advanced Touch safety Spec",
-        target: "github.com/pbakaus/impeccable/issues/12",
+        target: "atlas/design-system",
         impact: "Design System Guidelines Standard",
         difficulty: "A11y Touch Spacing PR Specification",
         summary: `Write and submit a professional 'Mobile Spacing and Touch Safety Spec' checklist to govern how AI design agents structure layout buttons and touch zones.`,
         whyMatch: `UI accessibility is a premium skill, ${n}. Your spec helps clean up layout bugs across global web widgets.`,
         estimatedMinutes: 30,
-        sourceUrl: "https://github.com/pbakaus/impeccable",
+        sourceUrl: "./DESIGN.md",
         complexity: "Teaches touch safety a11y criteria, design system tokens specification, and custom markdown template layouts.",
         imageUrl: ""
       }
@@ -1117,9 +1209,12 @@ AGE-SPECIFIC DETAIL GUIDELINES (Ages 15-17):
     }
 
     let data = {};
+    let finalImageUrl = "";
+    const category = opp.type === "wildlife-map" ? "maps" : opp.type === "code-widget" ? "tech" : opp.type === "eco-campaign" ? "campaign" : "science";
+
     if (client) {
       try {
-        const prompt = `
+        const detailsPrompt = `
 Generate the missing details for this specific project opportunity for ${answers.name || "Maya"} (${answers.age || 16}):
 Title: "${opp.title}"
 Type: "${opp.type}"
@@ -1140,30 +1235,76 @@ Return JSON:
 }
 `;
 
-        const response = await client.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              required: ["impact", "difficulty", "summary", "whyMatch", "estimatedMinutes", "sourceUrl", "complexity"],
-              properties: {
-                impact: { type: Type.STRING },
-                difficulty: { type: Type.STRING },
-                summary: { type: Type.STRING },
-                whyMatch: { type: Type.STRING },
-                estimatedMinutes: { type: Type.INTEGER },
-                sourceUrl: { type: Type.STRING },
-                complexity: { type: Type.STRING },
+        const imagePrompt = `A premium, state-of-the-art flat vector-style minimalist illustration representing the project "${opp.title}" (topic: "${answers.topic || "conservation"}").
+Styled in the Claude Monet impressionist design system. Incorporate warm golden sands (#fffaec), shifting lavenders and soft golds, and an antique paper texture background.
+Use less than 15% foliage emerald green (#10b981) only for subtle accents. Ensure a warm, eye-safe, and luminous color palette with extremely smooth organic shapes and glowing gradients.
+Visual element to show: ${category === "maps" ? "an organic compass, path line, or landscape map" : category === "tech" ? "a neat modern computer widget slider or code fragment" : category === "campaign" ? "an open scroll, envelope, or civic signature" : "a cute sea turtle or nature flask detail"}.
+Do not include any text in the image. Highly artistic, cozy, premium asset, 4:3 aspect ratio.`;
+
+        console.log(`Generating fresh details and illustration in parallel using Gemini for project: ${opp.title}...`);
+
+        const [detailsResponse, imageResponse] = await Promise.all([
+          client.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: detailsPrompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                required: ["impact", "difficulty", "summary", "whyMatch", "estimatedMinutes", "sourceUrl", "complexity"],
+                properties: {
+                  impact: { type: Type.STRING },
+                  difficulty: { type: Type.STRING },
+                  summary: { type: Type.STRING },
+                  whyMatch: { type: Type.STRING },
+                  estimatedMinutes: { type: Type.INTEGER },
+                  sourceUrl: { type: Type.STRING },
+                  complexity: { type: Type.STRING },
+                }
               }
             }
-          }
-        });
+          }).catch(err => {
+            console.error("Gemini details generation failed inside parallel block:", err);
+            return null;
+          }),
+          client.models.generateContent({
+            model: "gemini-3.1-flash-image-preview",
+            contents: [imagePrompt],
+            config: {
+              responseModalities: ["IMAGE"]
+            }
+          }).catch(err => {
+            console.error("Gemini image generation failed inside parallel block:", err);
+            return null;
+          })
+        ]);
 
-        data = JSON.parse(response.text || "{}");
+        if (detailsResponse) {
+          data = JSON.parse(detailsResponse.text || "{}");
+        }
+
+        if (imageResponse) {
+          const parts = imageResponse.candidates?.[0]?.content?.parts || (imageResponse as any).parts || [];
+          let base64Image: string | null = null;
+          let mimeType = "image/png";
+
+          for (const part of parts) {
+            if (part.inlineData && part.inlineData.data) {
+              base64Image = part.inlineData.data;
+              if (part.inlineData.mimeType) mimeType = part.inlineData.mimeType;
+              break;
+            }
+          }
+
+          if (base64Image) {
+            finalImageUrl = `data:${mimeType};base64,${base64Image}`;
+            console.log("Nano Banana 2 image generated successfully concurrently!");
+          } else {
+            console.log("No inline image data found in Nano Banana 2 response. Falling back to prebuilt SVG.");
+          }
+        }
       } catch (err: any) {
-        console.error("Gemini details generation failed, using mock fields:", err);
+        console.error("Parallel details and illustration generation failed:", err);
       }
     }
 
@@ -1178,51 +1319,6 @@ Return JSON:
       sourceUrl: (data as any).sourceUrl || defaultData.sourceUrl,
       complexity: (data as any).complexity || defaultData.complexity
     };
-
-    const category = opp.type === "wildlife-map" ? "maps" : opp.type === "code-widget" ? "tech" : opp.type === "eco-campaign" ? "campaign" : "science";
-    
-    // Attempt to generate a gorgeous painterly illustration using Nano Banana 2 (Gemini 3.1 Flash Image model)
-    let finalImageUrl = "";
-    if (client) {
-      try {
-        console.log(`Generating fresh illustration using Nano Banana 2 (gemini-3.1-flash-image-preview) for project: ${opp.title}...`);
-        
-        const imagePrompt = `A premium, state-of-the-art flat vector-style minimalist illustration representing the project "${opp.title}" (topic: "${answers.topic || "conservation"}").
-Styled in the Claude Monet impressionist design system. Incorporate warm golden sands (#fffaec), shifting lavenders and soft golds, and an antique paper texture background.
-Use less than 15% foliage emerald green (#10b981) only for subtle accents. Ensure a warm, eye-safe, and luminous color palette with extremely smooth organic shapes and glowing gradients.
-Visual element to show: ${category === "maps" ? "an organic compass, path line, or landscape map" : category === "tech" ? "a neat modern computer widget slider or code fragment" : category === "campaign" ? "an open scroll, envelope, or civic signature" : "a cute sea turtle or nature flask detail"}.
-Do not include any text in the image. Highly artistic, cozy, premium asset, 4:3 aspect ratio.`;
-
-        const imageResponse = await client.models.generateContent({
-          model: "gemini-3.1-flash-image-preview",
-          contents: [imagePrompt],
-          config: {
-            responseModalities: ["IMAGE"]
-          }
-        });
-
-        const parts = imageResponse.candidates?.[0]?.content?.parts || (imageResponse as any).parts || [];
-        let base64Image: string | null = null;
-        let mimeType = "image/png";
-
-        for (const part of parts) {
-          if (part.inlineData && part.inlineData.data) {
-            base64Image = part.inlineData.data;
-            if (part.inlineData.mimeType) mimeType = part.inlineData.mimeType;
-            break;
-          }
-        }
-
-        if (base64Image) {
-          finalImageUrl = `data:${mimeType};base64,${base64Image}`;
-          console.log("Nano Banana 2 image generated successfully!");
-        } else {
-          console.log("No inline image data found in Nano Banana 2 response. Falling back to prebuilt SVG.");
-        }
-      } catch (imgError: any) {
-        console.error("Nano Banana 2 image generation failed, falling back to prebuilt SVG:", imgError);
-      }
-    }
 
     if (!finalImageUrl) {
       console.log("Utilizing prebuilt tailored SVG fallback...");
@@ -1276,516 +1372,173 @@ app.post("/api/project/select", async (req, res) => {
     return res.status(404).json({ error: "Opportunity not found" });
   }
 
-  // Generate tailored content live using Gemini!
   const client = getGeminiClient();
-  let draftBefore = "";
-  let draftAfter = "";
-  let responseEssayPrompt = "";
 
-  if (opportunity.type === "oss-doc-pr") {
-    draftBefore = `# iNaturalist Turtle Logging Ecosystem Guide\n\nThis guide covers field reporting for nesting sites.\n\n## Marine Plastic Reports\n(Needs documentation on sea turtles and plastic toxicity metadata keys. Issue #482)`;
-    
-    if (client) {
-      try {
-        const generation = await (client as any).interactions.create({
-          agent: "antigravity-preview-05-2026",
-          input: `Write a student_profile.json file with ${JSON.stringify(session.answers)}. Then, given a student named ${n} (${grade}) interested in: "${session.answers.spark || "Plastics on beaches"}", write a simple 2-paragraph addition representing a documentation guide about microplastic toxicity metrics in nesting sand. Return ONLY the drafted text block to insert.`,
-          environment: "remote"
-        });
-        draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n${generation.output_text || "No draft generated."}`;
-      } catch (e) {
-        draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n- Metric: Nesting beach toxicity ratio (MP-Tox-Rating) is calculated via microplastic density per meter of nesting sand.\n- Safety levels: Any region with >10 microplastic shards per kilogram of nesting sand experiences significant incubation temperatures distortion.`;
-      }
-    } else {
-      draftAfter = `${draftBefore}\n\n## Microplastic Toxicity Protocol (Addendum via student ${n})\n\n### MP-Toxicity sand metrics\n- Incubation distortion: Any nesting beach exceeding 10 microscopic plastic chips per pound experiences false heating curves, altering turtle hatchling gender ratios (extreme female skew).\n- Action metrics: Site coordinators must run pre-nesting soil sieve tests and report the MP-Tox metric flag in local metadata spreadsheets before major logger deployments.`;
+  // Generate steps and content using Gemini based on the ACTUAL project
+  let generatedSteps: any[] = [];
+
+  if (client) {
+    try {
+      const stepPrompt = `You are helping ${n} (age ${age}) build a real-world project. This is NOT a software project — use plain real-world language. No "toolkit", "folder structure", "git", "sandbox", or tech jargon.
+
+Project: "${opportunity.title}"
+Type: "${opportunity.type}"
+What they will make: "${opportunity.summary}"
+Where it goes: "${opportunity.target}"
+What they care about: "${session.answers.spark || "making a positive difference"}"
+
+Generate exactly 5 steps. Return JSON:
+{
+  "draftContent": "Write 250-400 words of the ACTUAL content for this project (op-ed, letter, FAQ, petition, post — whatever matches the type). Use ${n}'s name naturally. Every sentence must be specific to their cause: '${session.answers.spark}'. No generic filler.",
+  "steps": [
+    {
+      "title": "short real-world action phrase (max 6 words)",
+      "description": "one sentence: what they specifically do and why it matters for this exact project",
+      "actionType": "init",
+      "consoleLogs": ["AI assistant log specific to this project, line 1", "line 2"]
     }
-  } else if (opportunity.type === "publish-essay") {
-    if (client) {
-      try {
-        const generation = await (client as any).interactions.create({
-          agent: "antigravity-preview-05-2026",
-          input: `Write a student_profile.json file with ${JSON.stringify(session.answers)}. Then, Create an editorial essay (about 200 words) signed by ${n}, a ${age}-year-old environmental leader, covering "${session.answers.spark}". Make the tone passionate, informative, containing three bulleted action proposals. The headline must belong to: "${opportunity.title}". Return ONLY the drafted markdown text.`,
-          environment: "remote"
-        });
-        responseEssayPrompt = generation.output_text || "Draft could not be initiated live.";
-      } catch (e) {
-        responseEssayPrompt = `# ${opportunity.title}\n\nBy ${n}, ${grade}\n\nWe look at the beach and see a canvas for sunset walks. But for nesting green sea turtles, it's a minefield of non-biodegradable particles. Microplastics are changing sand density, locking in solar radiation, and threatening upcoming turtle generations. Here are three quick protocols to implement in coastal schools today. Let's make nesting grounds real sanctuaries again.`;
-      }
-    } else {
-      responseEssayPrompt = `# ${opportunity.title}\n\nBy ${n}, ${grade}\n\nWe look at the beautiful pristine sand and think it's clean. But beneath the surface, tiny microscopic shards of cups, bags, and straws are altering the soil warmth. For sea turtles, beach sand is the cradle of life. When microplastics heat the sand, they skew green sea turtle hatchling genders and lower survival rates.\n\nIf we wait for international laws, we lose the coastline. We must enforce local microplastic sieving, beach cleanups before nesting, and high-school lead conservation efforts.`;
+  ]
+}
+
+Step actionType order (5 steps):
+1. "init" — read the destination site, understand format and audience for THIS project
+2. "fetch" — find specific facts, quotes, or contacts needed for THIS project
+3. "draft" — write the actual content
+4. "diff" — review improvements, compare before/after
+5. "publish" — post or submit to destination
+
+Step title rules — be SPECIFIC, not generic:
+- NOT "Set up toolkit workspace" → YES "Read 3 op-eds in local papers"
+- NOT "Create folder structure" → YES "Find shelter adoption page gaps"
+- NOT "Initialize project" → YES "Look up your local council email"
+
+consoleLogs rules:
+- 2-4 lines showing an AI doing real research for THIS project
+- Example for shelter op-ed init: "Scanning local newspaper opinion section... found 2 recent animal welfare op-eds"
+- Publish step: include realistic URL for ${opportunity.target}
+
+Short sentences. Plain words. 15-year-old reading level.`;
+
+      const response = await client.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: stepPrompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ["draftContent", "steps"],
+            properties: {
+              draftContent: { type: Type.STRING },
+              steps: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  required: ["title", "description", "actionType", "consoleLogs"],
+                  properties: {
+                    title: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                    actionType: { type: Type.STRING },
+                    consoleLogs: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  }
+                }
+              }
+            }
+          }
+        }
+      });
+
+      const parsed = JSON.parse(response.text || "{}");
+      const draftContent = parsed.draftContent || "";
+      const steps = parsed.steps || [];
+
+      generatedSteps = steps.map((step: any, idx: number) => {
+        const isLast = idx === steps.length - 1;
+        const isDraft = step.actionType === "draft";
+        const isDiff = step.actionType === "diff";
+
+        const payload: any = {};
+        if (step.consoleLogs?.length) payload.consoleLogs = step.consoleLogs;
+        if (isDraft) payload.editorPreview = draftContent;
+        if (isDiff) {
+          payload.diffHeader = `diff --git a/${opportunity.target} b/${opportunity.target}`;
+          payload.diffBefore = `# ${opportunity.title}\n\n(empty — content not yet written)`;
+          payload.diffAfter = draftContent;
+        }
+        if (isLast) {
+          const slug = opportunity.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+          payload.destUrl = `https://${opportunity.target}/${slug}`;
+        }
+
+        return {
+          title: step.title,
+          description: step.description,
+          status: "pending",
+          actionType: step.actionType,
+          payload,
+        };
+      });
+    } catch (err) {
+      console.error("Step generation failed, using fallback:", err);
     }
-  } else if (opportunity.type === "eco-campaign") {
-    // Public advocate lobbying letter
-    draftBefore = "DRAFT ADVOCACY RESOLUTION FOR CITY COUNCIL\n\nAttn: Hillsborough Environmental Protection Board\nStaging environmental oversight directive.";
-    if (client) {
-      try {
-        const generation = await (client as any).interactions.create({
-          agent: "antigravity-preview-05-2026",
-          input: `Write a student_profile.json file with ${JSON.stringify(session.answers)}. Then, Create an official citizen communication letter from ${n} (Age ${age}, student in Hillsborough) directed to the local Environmental Council regarding the urgent need to establish community-accessible microplastic sieve kits at beach access gates. Focus on nesting sands temperature safety. Return ONLY the complete formal petition letter text.`,
-          environment: "remote"
-        });
-        responseEssayPrompt = generation.output_text || "Draft could not be completed live.";
-        draftAfter = responseEssayPrompt;
-      } catch (e) {
-        responseEssayPrompt = `ADVOCACY RESOLUTION PRESENTED BY ${n.toUpperCase()} (${grade})\n\nTO THE HILLSBOROUGH ENVIRONMENT & PARKS SUPERINTENDENTS:\n\nSubject: Mandating Soil Sieve Hubs at Beach Boundary Dunes\n\nWe, the youth residents, ask for beach cleanup hubs to be equipped with soil sieve kits. Removing large trash is not enough. Turtle nests suffer from solar heat locks when micro-particles exceed 12%. Community led sieving is achievable and teaches valuable science.`;
-        draftAfter = responseEssayPrompt;
-      }
-    } else {
-      responseEssayPrompt = `ADVOCACY RESOLUTION PRESENTED BY ${n.toUpperCase()} (${grade})\n\nTO THE HILLSBOROUGH ENVIRONMENT & PARKS SUPERINTENDENTS:\n\nSubject: Mandating Soil Sieve Hubs at Beach Boundary Dunes\n\nWe, the youth residents, ask for beach cleanup hubs to be equipped with soil sieve kits. Removing large trash is not enough. Turtle nests suffer from solar heat locks when micro-particles exceed 12%. Community led sieving is achievable and teaches valuable science.`;
-      draftAfter = responseEssayPrompt;
-    }
-  } else if (opportunity.type === "code-widget") {
-    // React code widget logic representation
-    draftBefore = `// Staging Initial Pollution Degradation Object structure\nconst PlasticsDecompositionRates = {\n  plasticBag: 20,\n  coffeeCup: 50,\n  waterBottle: 450\n};`;
-    draftAfter = `// Developed Interactive Calculator Component by ${n}\n\nimport React, { useState } from 'react';\n\nexport default function MarineDecompositionCalculator() {\n  const [bagAmount, setBagAmount] = useState(5);\n  const breakTime = bagAmount * 20;\n\n  return (\n    <div className="card-custom">\n      <h3>Estimated Marine Dune Decay Factor</h3>\n      <p>Bags in sand: {bagAmount} units</p>\n      <p>Average toxic micro-fragments released: {breakTime} thousand particles</p>\n    </div>\n  );\n}`;
-    responseEssayPrompt = draftAfter;
-  } else if (opportunity.type === "wildlife-map") {
-    // Geo logs coordinates mapping layer
-    draftBefore = `<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Document>\n    <name>Turtle Nesting Empty Shell Nodes</name>\n  </Document>\n</kml>`;
-    draftAfter = `<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Document>\n    <name>Atlantic Turtle Nesting Boundaries by ${n}</name>\n    <Placemark>\n      <name>Nest Marker #1 - ${session.answers.topic || "Shore"}</name>\n      <description>Spotted Microplastic Concentration high. Beach temperature deviation detected.</description>\n      <Point>\n        <coordinates>-80.1242,25.7617,0</coordinates>\n      </Point>\n    </Placemark>\n  </Document>\n</kml>`;
-    responseEssayPrompt = draftAfter;
-  } else if (opportunity.type === "teach-skill") {
-    // Impeccable Design Language addon
-    draftBefore = `# Mobile Touch Target & Spacing Guidelines\n\nEnsure buttons are clickable.\n\n## Rules\n- Button size should be standard.`;
-    
-    if (client) {
-      try {
-        const generation = await (client as any).interactions.create({
-          agent: "antigravity-preview-05-2026",
-          input: `Write a student_profile.json file with ${JSON.stringify(session.answers)}. Then, write a 2-paragraph markdown addition for an AI design guidelines file (for a project called pbakaus/impeccable). It must specify exact styling directives for touch target safety, recommending at least 44px minimum touch sizes and hover cursor cues for desktop. Keep the design language crisp and professional. Return ONLY the drafted markdown text.`,
-          environment: "remote"
-        });
-        draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n${generation.output_text || "No draft generated."}`;
-      } catch (e) {
-        draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n- Mobile minimum size: Touch targets MUST span at least 44x44px to prevent miss-clicks on mobile devices.\n- Hover feedbacks: Interactive nodes MUST specify a hover animation transition (e.g. hover:bg-opacity-80) to feed back cursor alignments.`;
-      }
-    } else {
-      draftAfter = `${draftBefore}\n\n## Touch Targets & Hover Feedback (Addendum via student ${n})\n\n- Mobile touch safety: Interactive blocks must cover at least 44x44 pixels to preserve comfortable thumb mechanics on physical phone screens.\n- Hover feedback gestures: Implement active cursor reactions like hover:scale-[1.02] or hover:bg-slate-800 to indicate depth and physical click boundaries on desktop viewports.`;
-    }
-    responseEssayPrompt = draftAfter;
   }
 
-  // Create customized multi-step task list for active project based on type
-  if (opportunity.type === "oss-doc-pr") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Fork target codebase & start branch",
-          description: `Initialize isolated sandbox environment for ${n}. Mirror ${opportunity.target} locally.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `$ git clone https://github.com/inaturalist/turtle-db.git`,
-              `Clone success: 142 objects written to index.`,
-              `$ cd turtle-db && git checkout -b agent/${n.toLowerCase()}-nesting-docs`,
-              `Switched to new branch: 'agent/${n.toLowerCase()}-nesting-docs'`
-            ]
-          }
-        },
-        {
-          title: "Browse target guides & parse gaps",
-          description: "Scan indices and locate the focal markdown schema files in current repositories.",
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Searching directories... found Match: /docs/conservation/nestlogger-guide.md`,
-              `Extracting current contribution schemas...`
-            ]
-          }
-        },
-        {
-          title: "Draft tailored document addendum",
-          description: `Formulate documentation parameters addressing sandbox criteria: "${session.answers.spark}".`,
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Launching server side intelligence compiler...`,
-              `Synthesizing custom instructions with gemini-3.5-flash...`,
-              `Markdown additions drafted.`
-            ],
-            editorPreview: draftBefore,
-          }
-        },
-        {
-          title: "Review changes Unified Diff",
-          description: "Evaluate exact git unified patch comparison before generating the Pull Request.",
-          status: "pending",
-          actionType: "diff",
-          payload: {
-            diffHeader: "diff --git a/docs/conservation/nestlogger-guide.md b/docs/conservation/nestlogger-guide.md",
-            diffBefore: draftBefore,
-            diffAfter: draftAfter,
-          }
-        },
-        {
-          title: "Propose Codebase Pull Request on GitHub",
-          description: `Commit physical guides and submit a verified Open Source contribution signed by ${n}.`,
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `$ git add docs/conservation/nestlogger-guide.md`,
-              `$ git commit -m "docs: add coastal microplastic toxicity guidelines by ${n}"`,
-              `$ git push origin agent/${n.toLowerCase()}-nesting-docs`,
-              `Opening Pull Request. Handshaking api.github.com/repos/inaturalist/turtle-db/pulls...`
-            ],
-            destUrl: "https://github.com/inaturalist/turtle-db/pull/6249"
-          }
+  // Fallback if Gemini unavailable or failed
+  if (generatedSteps.length === 0) {
+    const slug = opportunity.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+    generatedSteps = [
+      {
+        title: "Research the target",
+        description: `Look at ${opportunity.target} and understand what's missing or needs improvement.`,
+        status: "pending",
+        actionType: "init",
+        payload: { consoleLogs: [`Scanning ${opportunity.target}...`, `Found areas to improve.`] }
+      },
+      {
+        title: "Gather facts and outline",
+        description: `Collect the key information and structure for "${opportunity.title}".`,
+        status: "pending",
+        actionType: "fetch",
+        payload: { consoleLogs: [`Gathering relevant information...`, `Outline ready.`] }
+      },
+      {
+        title: "Write the content",
+        description: `Draft the actual ${opportunity.label || "project"} content for ${opportunity.target}.`,
+        status: "pending",
+        actionType: "draft",
+        payload: {
+          consoleLogs: [`Drafting content...`, `Draft ready for review.`],
+          editorPreview: `# ${opportunity.title}\n\nBy ${n}\n\n${opportunity.summary}\n\nTarget: ${opportunity.target}`
         }
-      ]
-    };
-  } else if (opportunity.type === "publish-essay") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Scan Substack publication credentials",
-          description: `Establish OAuth pathways for ${n}'s profile directed at publication platform database.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `Establishing handshakes with api.substack.com...`,
-              `Workspace authenticated safely.`
-            ]
-          }
-        },
-        {
-          title: "Synthesize outline with writing assistant",
-          description: `Map out paragraphs, definitions, and headers tailored to your topic: ${session.answers.topic}.`,
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Drafting newsletter layout outline sequence...`,
-              `Incorporating age-safety and readability checks.`
-            ]
-          }
-        },
-        {
-          title: "Edit and review editorial prose essay",
-          description: "Read, edit, and approve final draft essay from editor board.",
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Assembled 210 words for Substack body draft...`,
-              `Layout ready.`
-            ],
-            editorPreview: responseEssayPrompt,
-          }
-        },
-        {
-          title: "Deploy public article live",
-          description: `Publish post. Generates a fully persistent Substack guest essay holding ${n}'s signature.`,
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `Submitting metadata, draft header, and markup tags...`,
-              `Post successfully compiled and released.`
-            ],
-            destUrl: `https://${opportunity.target}/p/microplastics-sand-nurseries`
-          }
+      },
+      {
+        title: "Review changes",
+        description: "Compare the before and after to make sure everything looks right.",
+        status: "pending",
+        actionType: "diff",
+        payload: {
+          diffHeader: `diff --git a/${opportunity.target} b/${opportunity.target}`,
+          diffBefore: `(empty — not yet written)`,
+          diffAfter: `# ${opportunity.title}\n\nBy ${n}\n\n${opportunity.summary}`
         }
-      ]
-    };
-  } else if (opportunity.type === "eco-campaign") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Verify Municipal Citizens Portal Endpoint",
-          description: `Establish isolated sandbox container to handshake with local representative councils.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `$ curl -I https://${opportunity.target}/citizens-portal`,
-              `HTTP/2 200 OK - Secure boundary validated.`,
-              `Initializing advocacy petition container for user: ${n}`
-            ]
-          }
-        },
-        {
-          title: "Establish local counselor board mailing list",
-          description: `Scrape the public park supervisors directory coordinates matching your county zone database.`,
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Searching database grids... found 3 active councilors for Environmental Protection:`,
-              `- Commissioner Ronald Davies (District 2)`,
-              `- Director Martha K. Lopez (Parks & Coasts)`,
-              `- Deputy Planner Sarah Chen`
-            ]
-          }
-        },
-        {
-          title: "Draft tailored Advocacy Letter",
-          description: `Run intelligence compiler to generate a convincing public communication signed by ${n} (Age ${age}).`,
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Structuring letter headers and incorporating user concerns: "${session.answers.spark}"...`,
-              `Advocacy petition letter generated.`
-            ],
-            editorPreview: responseEssayPrompt,
-          }
-        },
-        {
-          title: "Review letter changes and diff",
-          description: "Validate the document outline parameters before submitting off-site.",
-          status: "pending",
-          actionType: "diff",
-          payload: {
-            diffHeader: "diff --git a/advocacy/letters/hillsborough-sand-sieves.txt b/advocacy/letters/hillsborough-sand-sieves.txt",
-            diffBefore: draftBefore,
-            diffAfter: draftAfter
-          }
-        },
-        {
-          title: "Publish document dispatch to county portal",
-          description: "Submit petition package to the local board to initiate a community environmental motion.",
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `Transmitting advocacy packet to hillsborough-county.gov/citizens-portal...`,
-              `Assigned Live Packet Tracking ID: #CIVIC-PR-2026-8801`,
-              `Published and recorded. Council tracking page initialized.`
-            ],
-            destUrl: `https://${opportunity.target}/tracking/CIVIC-PR-2026-8801`
-          }
+      },
+      {
+        title: "Publish and share",
+        description: `Send the finished ${opportunity.label || "project"} to ${opportunity.target}.`,
+        status: "pending",
+        actionType: "publish",
+        payload: {
+          consoleLogs: [`Submitting to ${opportunity.target}...`, `Published successfully.`],
+          destUrl: `https://${opportunity.target}/${slug}`
         }
-      ]
-    };
-  } else if (opportunity.type === "code-widget") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Initialize React app widget framework",
-          description: `Spin up a component staging template inside the sandbox workspace for ${n}.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `$ npm init vite@latest pollution-calculator -- --template react-ts`,
-              `Initialized React template correctly in local directory.`,
-              `$ cd pollution-calculator && npm install lucide-react`
-            ]
-          }
-        },
-        {
-          title: "Map custom chemical decomposition metrics",
-          description: `Set up calculation algorithms using scientific metrics for Soil & Coastal water plastics.`,
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Registering standard biological timelines:`,
-              `- Simple plastic bags: 20 years`,
-              `- Synthetic coffee lids: 50 years`,
-              `- Industrial foam coolers: 450 years`,
-              `Binding equations onto component sliders.`
-            ]
-          }
-        },
-        {
-          title: "Review interactive React Calculator code",
-          description: "Review component state scripts and render functions to verify design matches.",
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Bundling component elements and styling using high-contrast Tailwind classes...`,
-              `Interactive calculator sandbox code loaded.`
-            ],
-            editorPreview: responseEssayPrompt,
-          }
-        },
-        {
-          title: "Evaluate Code diff",
-          description: "Compare baseline templates with your fully developed slide tool parameters.",
-          status: "pending",
-          actionType: "diff",
-          payload: {
-            diffHeader: "diff --git a/src/components/MarineDecompositionCalculator.tsx b/src/components/MarineDecompositionCalculator.tsx",
-            diffBefore: draftBefore,
-            diffAfter: draftAfter
-          }
-        },
-        {
-          title: "Ship Live React tracker to GitHub Pages",
-          description: `Compile static client assets and deploy a fully reactive demo page for your portfolio.`,
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `$ npm run build`,
-              `Build success: assets compiled in 1.1s (dist/ directory).`,
-              `$ npx gh-pages -d dist`,
-              `Successfully published widget node map at https://${opportunity.target}`
-            ],
-            destUrl: `https://${opportunity.target}`
-          }
-        }
-      ]
-    };
-  } else if (opportunity.type === "wildlife-map") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Initialize GIS Map Layer nodes",
-          description: `Scaffolding Map marker arrays mapping the ecological coordinate boundaries for ${n}.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `$ cat <<EOF > locations.kml`,
-              `Created staging XML locations blueprint safely.`
-            ]
-          }
-        },
-        {
-          title: "Mine geo-location marks and temperature indices",
-          description: "Fetch coastal sighting loggers to set latitudinal markers on shore lines.",
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Pulling shoreline report tables...`,
-              `Marker #1: Coral Cove beach (25.7617 N, -80.1242 W)`,
-              `Marker #2: Loggerhead Dune site (25.8010 N, -80.1102 W)`,
-              `Binding microplastic warning descriptions onto marker data structures.`
-            ]
-          }
-        },
-        {
-          title: "Review assembled KML Map Layer code",
-          description: "Review compiled geo-spatial datasets before committing maps.",
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Writing KML code tags... completed.`,
-              `1 coordinate set compiled.`
-            ],
-            editorPreview: responseEssayPrompt,
-          }
-        },
-        {
-          title: "Check code differences against template",
-          description: "Compare clean spatial XML markers database state.",
-          status: "pending",
-          actionType: "diff",
-          payload: {
-            diffHeader: "diff --git a/maps/locations.kml b/maps/locations.kml",
-            diffBefore: draftBefore,
-            diffAfter: draftAfter
-          }
-        },
-        {
-          title: "Publish Custom Map layer live",
-          description: "Launch public coordinate overlay on Google MyMaps to support local dune volunteers.",
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `Uploading locations.kml package to google.com/maps/mymaps layers directory...`,
-              `Layer compiled successfully. Google Maps integration handshakes finalized.`
-            ],
-            destUrl: `https://${opportunity.target}`
-          }
-        }
-      ]
-    };
-  } else if (opportunity.type === "teach-skill") {
-    session.activeProject = {
-      id: opportunityId,
-      stepIndex: 0,
-      steps: [
-        {
-          title: "Fork pbakaus/impeccable Repository",
-          description: `Spin up student fork directories of the official design framework on the sandbox workspace.`,
-          status: "pending",
-          actionType: "init",
-          payload: {
-            consoleLogs: [
-              `$ git clone https://github.com/pbakaus/impeccable.git`,
-              `Clone success: 85 objects written to memory buffer.`,
-              `$ cd impeccable && git checkout -b agent/teach-touch-targets-${n.toLowerCase()}`,
-              `Branch created: 'agent/teach-touch-targets-${n.toLowerCase()}'`
-            ]
-          }
-        },
-        {
-          title: "Scan design skill structures & guidelines",
-          description: "Deconstruct guidelines folder structures to find impeccable.md hook lines.",
-          status: "pending",
-          actionType: "fetch",
-          payload: {
-            consoleLogs: [
-              `Scanning root folders... matched target file: /impeccable.md`,
-              `Extracting active formatting, padding, and layout instruction tables...`
-            ]
-          }
-        },
-        {
-          title: "Draft Mobile target instruction",
-          description: "Use LLM intelligence to formulate beautiful responsive guidelines addressing touch targets and cursor hover cues.",
-          status: "pending",
-          actionType: "draft",
-          payload: {
-            consoleLogs: [
-              `Applying strict system instructions checks...`,
-              `Combining preference topic parameters: "${session.answers.spark || "Design parameters for AI tools"}"`,
-              `Custom touch safety guidelines designed.`
-            ],
-            editorPreview: draftBefore,
-          }
-        },
-        {
-          title: "Review Markdown Diff File",
-          description: "Analyze the exact unified code diff guidelines updates before sealing the contribution.",
-          status: "pending",
-          actionType: "diff",
-          payload: {
-            diffHeader: "diff --git a/impeccable.md b/impeccable.md",
-            diffBefore: draftBefore,
-            diffAfter: draftAfter
-          }
-        },
-        {
-          title: "Submit Contribution Pull Request",
-          description: `Propose changes live to developer boards. Generates a formal public Pull Request signed by ${n}.`,
-          status: "pending",
-          actionType: "publish",
-          payload: {
-            consoleLogs: [
-              `$ git add impeccable.md`,
-              `$ git commit -m "docs: add mobile touch targets & hover guides by ${n}"`,
-              `$ git push origin agent/teach-touch-targets-${n.toLowerCase()}`,
-              `Creating git pull handshake with upstream repository...`
-            ],
-            destUrl: "https://github.com/pbakaus/impeccable/pull/48"
-          }
-        }
-      ]
-    };
+      }
+    ];
   }
+
+  session.activeProject = {
+    id: opportunityId,
+    stepIndex: 0,
+    steps: generatedSteps,
+  };
 
   // Pre-set the first step as active or completed and enrich steps with Agile metadata
   session.activeProject!.steps = session.activeProject!.steps.map((step, idx) => ({
@@ -1818,17 +1571,49 @@ app.post("/api/project/update-steps", async (req, res) => {
   const session = await getSession(sessionId);
   const { steps } = req.body;
   if (session && session.activeProject && Array.isArray(steps)) {
+    const previousActiveTaskId = session.activeProject.steps[session.activeProject.stepIndex]?.id;
     session.activeProject.steps = mergeIncomingSteps(session.activeProject.steps, steps);
+    preserveCurrentStep(session.activeProject, previousActiveTaskId);
     session.activeProject.started = true;
-    // Reset step index if it exceeds new bounds
-    if (session.activeProject.stepIndex >= steps.length) {
-      session.activeProject.stepIndex = 0;
-    }
     await saveSession(session);
     res.json({ success: true, project: session.activeProject });
   } else {
     res.status(404).json({ error: "Active project not found" });
   }
+});
+
+// Helper: Add one custom task without replacing the full task list
+app.post("/api/project/add-task", async (req, res) => {
+  const sessionId = req.headers["x-session-id"] as string || "session-maya";
+  const session = await getSession(sessionId);
+  if (!session || !session.activeProject) {
+    return res.status(404).json({ error: "Active project not found" });
+  }
+
+  const { task } = req.body;
+  if (!task || typeof task !== "object" || typeof task.title !== "string") {
+    return res.status(400).json({ error: "Valid task payload is required" });
+  }
+
+  const newTask: ProjectStepData = {
+    id: typeof task.id === "string" ? task.id : `custom-task-${Math.random().toString(36).substring(2, 7)}`,
+    title: task.title.trim(),
+    description: typeof task.description === "string" && task.description.trim()
+      ? task.description.trim()
+      : "User defined custom task on Agile sprint board.",
+    status: "pending",
+    actionType: "draft",
+    custom: true,
+    priority: ["low", "medium", "high"].includes(task.priority) ? task.priority : "medium",
+    notes: typeof task.notes === "string" ? task.notes : "",
+    tutorMessages: [],
+  };
+
+  session.activeProject.steps.push(newTask);
+  session.activeProject.started = true;
+
+  await saveSession(session);
+  res.json({ success: true, project: session.activeProject, task: newTask });
 });
 
 // Helper: Patch one task without replacing tutor chat or unrelated fields
@@ -1888,9 +1673,13 @@ app.post("/api/project/delete-task", async (req, res) => {
     return res.status(400).json({ error: "Only custom tasks can be deleted" });
   }
 
+  const previousActiveTaskId = session.activeProject.steps[session.activeProject.stepIndex]?.id;
+  const deletedIndex = session.activeProject.steps.findIndex((step) => step.id === taskId);
   session.activeProject.steps = session.activeProject.steps.filter((step) => step.id !== taskId);
-  if (session.activeProject.stepIndex >= session.activeProject.steps.length) {
-    session.activeProject.stepIndex = Math.max(0, session.activeProject.steps.length - 1);
+  if (previousActiveTaskId === taskId) {
+    session.activeProject.stepIndex = Math.min(deletedIndex, Math.max(0, session.activeProject.steps.length - 1));
+  } else {
+    preserveCurrentStep(session.activeProject, previousActiveTaskId);
   }
   session.activeProject.started = true;
 
@@ -1900,45 +1689,46 @@ app.post("/api/project/delete-task", async (req, res) => {
 
 // 4.4 API: Task-specific AI Tutor chat, persisted on the server copy of the task
 app.post("/api/project/task-tutor", async (req, res) => {
-  const sessionId = req.headers["x-session-id"] as string || "session-maya";
-  const session = await getSession(sessionId);
-  if (!session || !session.activeProject) {
-    return res.status(400).json({ error: "No active project found" });
-  }
+  try {
+    const sessionId = req.headers["x-session-id"] as string || "session-maya";
+    const session = await getSession(sessionId);
+    if (!session || !session.activeProject) {
+      return res.status(400).json({ error: "No active project found" });
+    }
 
-  const { taskId, message } = req.body;
-  const cleanMessage = typeof message === "string" ? message.trim() : "";
-  if (!taskId || !cleanMessage) {
-    return res.status(400).json({ error: "taskId and message are required" });
-  }
+    const { taskId, message } = req.body;
+    const cleanMessage = typeof message === "string" ? message.trim() : "";
+    if (!taskId || !cleanMessage) {
+      return res.status(400).json({ error: "taskId and message are required" });
+    }
 
-  const project = session.activeProject;
-  const taskIndex = project.steps.findIndex((step) => step.id === taskId);
-  if (taskIndex === -1) {
-    return res.status(404).json({ error: "Task not found" });
-  }
+    const project = session.activeProject;
+    const taskIndex = project.steps.findIndex((step) => step.id === taskId);
+    if (taskIndex === -1) {
+      return res.status(404).json({ error: "Task not found" });
+    }
 
-  const task = project.steps[taskIndex];
-  const opportunity = (session.opportunities || []).find(o => o.id === project.id) || {
-    title: "Custom Project",
-    summary: "",
-    whyMatch: "",
-  };
-  const currentMessages = task.tutorMessages ?? [];
-  const studentMessage = { sender: "student" as const, text: cleanMessage };
-  const client = getGeminiClient();
-  let reply = "";
+    const task = project.steps[taskIndex];
+    const opportunity = (session.opportunities || []).find(o => o.id === project.id) || {
+      title: "Custom Project",
+      summary: "",
+      whyMatch: "",
+    };
+    const currentMessages = task.tutorMessages ?? [];
+    const studentMessage = { sender: "student" as const, text: cleanMessage };
+    const client = getGeminiClient();
+    let reply = "";
 
-  if (!client) {
-    reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
-  } else {
-    try {
-      const recentHistory = currentMessages.slice(-10).map((msg) => {
-        const who = msg.sender === "student" ? "Student" : "Tutor";
-        return `${who}: ${msg.text}`;
-      }).join("\n");
+    if (!client) {
+      reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+    } else {
+      try {
+        const recentHistory = currentMessages.slice(-10).map((msg) => {
+          const role = msg.sender === "student" ? "user" : "model";
+          return { role, parts: [{ text: msg.text }] };
+        });
 
-      const systemInstruction = `You are the Atlas Personal AI Tutor for exactly one Kanban task.
+        const systemInstruction = `You are the Atlas Personal AI Tutor for exactly one Kanban task.
 You are tutoring ${session.answers.name || "the student"} (age ${session.answers.age || 16}, ${session.answers.grade || "student"}).
 Student spark/interest: "${session.answers.spark || ""}".
 Adventure title: "${opportunity.title}".
@@ -1960,43 +1750,54 @@ Your job:
 - Use short bullets or starter code only when useful.
 - Keep the response under 160 words.`;
 
-      const response = await client.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [{
-              text: `${recentHistory ? `Recent task tutor history:\n${recentHistory}\n\n` : ""}Student asks now: ${cleanMessage}`
-            }]
+        const response = await client.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: [
+            ...recentHistory,
+            { role: "user", parts: [{ text: cleanMessage }] }
+          ],
+          config: {
+            systemInstruction,
           }
-        ],
-        config: {
-          systemInstruction,
-        }
-      });
+        });
 
-      reply = response.text?.trim() || makePracticeTutorReply(cleanMessage, task, session, opportunity);
-    } catch (error) {
-      console.error("Task tutor endpoint failed; using practice reply.", error);
-      reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+        reply = response.text?.trim() || makePracticeTutorReply(cleanMessage, task, session, opportunity);
+      } catch (error) {
+        console.error("Task tutor endpoint failed; using practice reply.", error);
+        reply = makePracticeTutorReply(cleanMessage, task, session, opportunity);
+      }
     }
+
+    const agentMessage = { sender: "agent" as const, text: reply };
+    const latestSession = await getSession(sessionId);
+    if (!latestSession.activeProject) {
+      return res.status(400).json({ error: "No active project found" });
+    }
+
+    const latestTaskIndex = latestSession.activeProject.steps.findIndex((step) => step.id === taskId);
+    if (latestTaskIndex === -1) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    const latestTask = latestSession.activeProject.steps[latestTaskIndex];
+    latestSession.activeProject.steps[latestTaskIndex] = {
+      ...latestTask,
+      tutorMessages: [...(latestTask.tutorMessages ?? []), studentMessage, agentMessage],
+    };
+    latestSession.activeProject.started = true;
+
+    await saveSession(latestSession);
+    res.json({
+      success: true,
+      reply,
+      messages: latestSession.activeProject.steps[latestTaskIndex].tutorMessages,
+      project: latestSession.activeProject,
+      task: latestSession.activeProject.steps[latestTaskIndex],
+    });
+  } catch (err: any) {
+    console.error("Unexpected task-tutor error:", err);
+    return res.status(500).json({ error: "Tutor had a problem. Please try again!" });
   }
-
-  const agentMessage = { sender: "agent" as const, text: reply };
-  project.steps[taskIndex] = {
-    ...task,
-    tutorMessages: [...currentMessages, studentMessage, agentMessage],
-  };
-  project.started = true;
-
-  await saveSession(session);
-  res.json({
-    success: true,
-    reply,
-    messages: project.steps[taskIndex].tutorMessages,
-    project,
-    task: project.steps[taskIndex],
-  });
 });
 
 // 4.5 API: Chat-to-Edit with AI Co-Founder to mutate planning & reflect
@@ -2018,7 +1819,66 @@ app.post("/api/project/chat-to-edit", async (req, res) => {
     let reply = "";
     let updatedSteps = [...project.steps];
 
-    if (textLower.includes("add") || textLower.includes("create") || textLower.includes("insert")) {
+    if (/\b(replace|rewrite|update|change|fix|swap|redo)\b/.test(textLower) && /\b(burn|burning|trash|waste|leaf|leaves|air|neighbor|neighbour|community|toolkit|poster|reporting|respectful)\b/.test(textLower)) {
+      updatedSteps = [
+        {
+          id: `${project.id}-step-health-facts`,
+          title: "Gather local burn rules and health facts",
+          description: "Collect plain-language facts about smoke, asthma risk, local rules, and who residents can contact for official guidance.",
+          status: "pending" as const,
+          actionType: "fetch" as const,
+          custom: true,
+          priority: "high" as const,
+          notes: "",
+          tutorMessages: []
+        },
+        {
+          id: `${project.id}-step-neighbor-message`,
+          title: "Write respectful neighbor messaging",
+          description: "Draft short posts and door-hanger copy that explains the problem without blaming people and points to safer alternatives.",
+          status: "pending" as const,
+          actionType: "draft" as const,
+          custom: true,
+          priority: "high" as const,
+          notes: "",
+          tutorMessages: []
+        },
+        {
+          id: `${project.id}-step-graphics`,
+          title: "Design ready-to-share graphics",
+          description: "Create clean visuals for social posts, flyers, or a printable one-page toolkit about stopping leaf and trash burning.",
+          status: "pending" as const,
+          actionType: "draft" as const,
+          custom: true,
+          priority: "medium" as const,
+          notes: "",
+          tutorMessages: []
+        },
+        {
+          id: `${project.id}-step-alternatives-reporting`,
+          title: "Add alternatives and reporting instructions",
+          description: "List composting, yard-waste pickup, drop-off options, and clear steps for reporting illegal burning to the correct city office.",
+          status: "pending" as const,
+          actionType: "draft" as const,
+          custom: true,
+          priority: "medium" as const,
+          notes: "",
+          tutorMessages: []
+        },
+        {
+          id: `${project.id}-step-package`,
+          title: "Review and package the toolkit",
+          description: "Check the tone, facts, and visual clarity, then bundle the final posts and graphics into a shareable project folder.",
+          status: "pending" as const,
+          actionType: "diff" as const,
+          custom: true,
+          priority: "medium" as const,
+          notes: "",
+          tutorMessages: []
+        }
+      ];
+      reply = "I replaced the plan with a focused community clean-air toolkit path. Review the new steps, deselect anything you do not want, then start when it matches your project.";
+    } else if (/\b(add|create|insert)\b.*\b(task|milestone|card|step)\b|\b(add|create|insert) (task|step)\b/.test(textLower)) {
       const title = textLower.includes("interview") ? "Interview local dune volunteers" : textLower.includes("logo") ? "Sketch logo and branding notes" : "Draft social media announcement";
       const newStep = {
         id: `custom-step-${Math.random().toString(36).substring(2, 7)}`,
@@ -2043,7 +1903,7 @@ app.post("/api/project/chat-to-edit", async (req, res) => {
         const notesSummary = notesWithContent.map(s => `- *"${s.title}" notes: ${s.notes}*`).join("\n");
         reply = `Reflecting on your incredible progress, ${session.answers.name}! You have completed **${completedCount} milestone(s)** on your board. 🏆\n\n${notesWithContent.length > 0 ? `Here are your project diary reflections so far:\n${notesSummary}\n\nYour focus is truly stellar.` : "Your execution is great. Try writing down some notes inside your task cards so we can build a proper development journal together!"} Let's keep pushing towards the finish line!`;
       }
-    } else if (textLower.includes("priority") || textLower.includes("high") || textLower.includes("urgent")) {
+    } else if (textLower.includes("priority") || textLower.includes("make high priority") || textLower.includes("mark urgent")) {
       const idx = project.steps.findIndex(s => s.status === "pending" || s.status === "running");
       if (idx !== -1) {
         updatedSteps[idx].priority = "high";
@@ -2052,10 +1912,11 @@ app.post("/api/project/chat-to-edit", async (req, res) => {
         reply = `I searched for a pending task to update, but all tasks are already completed! Outstanding speed! 🌟`;
       }
     } else {
-      reply = `Hey ${session.answers.name}! As your AI Co-Founder, I am super excited about your progress on **"${opportunity.title}"**. Feel free to ask me to add tasks (e.g. *"add a task to draft logo ideas"*), change priorities, or reflect on your project journal! What's on your mind?`;
+      reply = makePracticeCoFounderReply(message, session, project, opportunity);
     }
 
     project.steps = updatedSteps;
+    project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
     await saveSession(session);
     return res.json({ reply, project });
   }
@@ -2073,8 +1934,8 @@ The student is ${studentName} (Age ${studentAge}) working on the project: "${opp
 Their focus/spark: "${session.answers.spark}".
 
 Your capabilities:
-1. **Supportive Mentor Chat**: Write encouraging, professional-grade co-founder messages. You are highly supportive and talk like a startup partner or mentor (friendly, inspiring, structured, never stuffy or robotic).
-2. **Mutate the Board**: If the student asks you to add, edit, rename, delete, reorder, or change priorities of steps, you can directly update the steps array.
+1. **Supportive Mentor Chat**: Your default mode is normal conversation. Answer questions, brainstorm, explain the project, help the student feel oriented, and talk naturally. Do not mutate the board unless the student clearly asks for a task/card/priority/status change.
+2. **Mutate the Board**: Only if the student explicitly asks you to add, edit, rename, delete, reorder, or change priorities/status of steps, return an updated steps array.
 3. **Journal Reflection**: Read through their completed milestones and any creation journal notes they've saved. Synthesize and reflect on their progress, giving them insights on what they've achieved and how it builds their leadership profile.
 
 INPUT DATA FOR CONTEXT:
@@ -2088,11 +1949,11 @@ You MUST respond with a JSON object containing EXACTLY these two keys. No markdo
   "reply": "A Markdown-formatted string containing your message to the student. Speak directly to them. Keep it within 2-4 engaging sentences or bullets.",
   "updatedSteps": [...]
 }
-Note on "updatedSteps": Return the complete steps array ONLY if you are adding, editing, renaming, deleting, or reordering steps. Otherwise, omit this key or set it to null. Ensure new custom tasks set "custom": true, "notes": "", "status": "pending", "actionType": "draft", "id": "custom-" + random 5-char string, and assign a priority ("low" | "medium" | "high").
+Note on "updatedSteps": For ordinary chat, questions, brainstorming, encouragement, explanations, or getting-started help, set "updatedSteps": null. Return the complete steps array ONLY if the student explicitly asks to add, edit, rename, delete, reorder, or change priorities/status of steps. Ensure new custom tasks set "custom": true, "notes": "", "status": "pending", "actionType": "draft", "id": "custom-" + random 5-char string, and assign a priority ("low" | "medium" | "high").
 
 Always output valid JSON.`;
 
-    const chatHistory = (messages || []).map((m: any) => {
+    const chatHistory = (messages || []).slice(-8).map((m: any) => {
       const role = (m.sender === "student" || m.sender === "user") ? "user" : "model";
       return { role, parts: [{ text: m.text }] };
     });
@@ -2100,6 +1961,7 @@ Always output valid JSON.`;
     const response = await client.models.generateContent({
       model: "gemini-3.5-flash",
       contents: [
+        ...chatHistory,
         { role: "user", parts: [{ text: `The student says: "${message}"` }] }
       ],
       config: {
@@ -2109,12 +1971,20 @@ Always output valid JSON.`;
     });
 
     const responseText = response.text || "{}";
-    const data = JSON.parse(responseText.trim().replace(/^```json/, "").replace(/```$/, ""));
-
-    if (data.updatedSteps && Array.isArray(data.updatedSteps)) {
-      project.steps = mergeIncomingSteps(project.steps, data.updatedSteps);
+    let data: any = {};
+    try {
+      data = JSON.parse(responseText.trim().replace(/^```json/, "").replace(/```$/, ""));
+    } catch {
+      data = { reply: responseText.trim() };
     }
 
+    if (data.updatedSteps && Array.isArray(data.updatedSteps)) {
+      const previousActiveTaskId = project.steps[project.stepIndex]?.id;
+      project.steps = mergeIncomingSteps(project.steps, data.updatedSteps);
+      preserveCurrentStep(project, previousActiveTaskId);
+    }
+
+    project.coFounderMessages = [...(messages || []), { sender: "agent", text: data.reply || "Awesome work! Let's keep building." }];
     await saveSession(session);
     res.json({
       reply: data.reply || "Awesome work! Let's keep building.",
@@ -2122,8 +1992,11 @@ Always output valid JSON.`;
     });
 
   } catch (error: any) {
-    console.error("Chat to Edit endpoint failed:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Chat to Edit endpoint failed; using practice reply.", error);
+    const reply = makePracticeCoFounderReply(message, session, project, opportunity);
+    project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
+    await saveSession(session);
+    res.json({ reply, project, fallback: true });
   }
 });
 

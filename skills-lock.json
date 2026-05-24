@@ -2,7 +2,7 @@
   "version": 1,
   "skills": {
     "impeccable": {
-      "source": "pbakaus/impeccable",
+      "source": "atlas/design-system",
       "sourceType": "github",
       "skillPath": "skill/SKILL.md",
       "computedHash": "34e59a34b9705187e87039faa5d9585aebe0056ef657f761b905afef276a3362"

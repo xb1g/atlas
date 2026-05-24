@@ -54,6 +54,7 @@ export interface ActiveProject {
   stepIndex: number;
   steps: ProjectStep[];
   started?: boolean;
+  coFounderMessages?: { sender: "student" | "agent"; text: string }[];
 }
 
 export interface SessionProfile {

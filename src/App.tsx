@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Sparkles, Sun, Compass, Send } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Routes, Route, useNavigate, useLocation, useParams } from "react-router-dom";
 import { SessionProfile, InterviewAnswers, Opportunity } from "./types";
 import InterviewForm from "./components/InterviewForm";
 import LandingHero from "./components/LandingHero";
@@ -11,6 +11,7 @@ import ProjectWorkbox from "./components/ProjectWorkbox";
 import ArtifactSuccess from "./components/ArtifactSuccess";
 import Reflection from "./components/Reflection";
 import Logo from "./components/Logo";
+import Profile from "./components/Profile";
 // @ts-ignore
 import monetBg from "./assets/images/monet_cliff_horizon_1779562138549.webp";
 
@@ -21,6 +22,32 @@ const getSessionId = () => {
     localStorage.setItem("atlas_session_id", sessionId);
   }
   return sessionId;
+};
+
+const getImageCacheKey = () => `atlas_images_${getSessionId()}`;
+
+const saveImageToCache = (oppId: string, imageUrl: string) => {
+  try {
+    const key = getImageCacheKey();
+    const cache = JSON.parse(localStorage.getItem(key) || "{}");
+    cache[oppId] = imageUrl;
+    localStorage.setItem(key, JSON.stringify(cache));
+  } catch {}
+};
+
+const loadImagesFromCache = (): Record<string, string> => {
+  try {
+    return JSON.parse(localStorage.getItem(getImageCacheKey()) || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const mergeImagesIntoOpportunities = (opportunities: any[]) => {
+  const cache = loadImagesFromCache();
+  return opportunities.map((o: any) =>
+    cache[o.id] ? { ...o, imageUrl: cache[o.id] } : o
+  );
 };
 
 const fetchApi = (url: string, options: RequestInit = {}) => {
@@ -34,9 +61,48 @@ const fetchApi = (url: string, options: RequestInit = {}) => {
   });
 };
 
+function ProjectRoute({ session, onApproveStep, isApproving, onBack, onUpdateProject }: {
+  session: any;
+  onApproveStep: () => void;
+  isApproving: boolean;
+  onBack: () => void;
+  onUpdateProject: (p: any) => void;
+}) {
+  const { oppId } = useParams<{ oppId: string }>();
+  const navigate = useNavigate();
+
+  if (!session) {
+    return (
+      <div className="max-w-6xl mx-auto py-20 flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-emerald-300 border-t-emerald-700 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!session.activeProject) {
+    navigate("/opportunities");
+    return null;
+  }
+
+  const opportunity = session.opportunities?.find((o: any) => o.id === oppId)
+    ?? session.opportunities?.find((o: any) => o.id === session.activeProject?.id);
+
+  return (
+    <ProjectWorkbox
+      project={session.activeProject}
+      opportunity={opportunity}
+      onApproveStep={onApproveStep}
+      isApproving={isApproving}
+      onBack={onBack}
+      onUpdateProject={onUpdateProject}
+    />
+  );
+}
+
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const routedProjectId = location.pathname.match(/^\/(?:plan|project)\/([^/]+)/)?.[1] ?? null;
 
   const [session, setSession] = useState<SessionProfile | null>(null);
   const [loading, setLoading] = useState(false);
@@ -60,6 +126,9 @@ export default function App() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const hasUserSteeredRef = useRef(false);
+  const selectingProjectRef = useRef<string | null>(null);
+  const routedProjectSelectionAttemptsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -69,36 +138,72 @@ export default function App() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [miningLogs, agentLogs, logMode]);
 
+  useEffect(() => {
+    if (!session || !routedProjectId || (!location.pathname.startsWith("/plan/") && !location.pathname.startsWith("/project/"))) return;
+    if (session.activeProject?.id === routedProjectId || loading || selectingProjectRef.current === routedProjectId) return;
+    if (routedProjectSelectionAttemptsRef.current.has(routedProjectId)) return;
+    if (!session.opportunities?.some((opp) => opp.id === routedProjectId)) return;
+
+    routedProjectSelectionAttemptsRef.current.add(routedProjectId);
+    selectingProjectRef.current = routedProjectId;
+    setActiveOppId(routedProjectId);
+    setLoading(true);
+
+    fetchApi("/api/project/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ opportunityId: routedProjectId }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.project) {
+          setSession((prev: any) => prev ? { ...prev, activeProject: data.project } : prev);
+        }
+      })
+      .catch((err) => console.error("Failed initializing routed project", err))
+      .finally(() => {
+        selectingProjectRef.current = null;
+        setLoading(false);
+      });
+  }, [session, routedProjectId, location.pathname, loading]);
+
   // Fetch Session data on mount
   useEffect(() => {
     fetchSession();
   }, []);
 
-  const triggerPendingBuilds = (opportunities: any[]) => {
-    opportunities.forEach((opp: any) => {
-      if (opp.status === "planned" || opp.status === "building") {
-        fetchApi("/api/opportunities/build", {
+  const triggerPendingBuilds = async (opportunities: any[]) => {
+    const pending = opportunities.filter(
+      (opp: any) => (opp.status === "planned" || opp.status === "building") && !opp.imageUrl
+    );
+
+    // Process them sequentially in the background to prevent clogging the browser's 6-connection pool limit
+    for (const opp of pending) {
+      try {
+        const res = await fetchApi("/api/opportunities/build", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ opportunityId: opp.id }),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.opportunity) {
-              setSession((prev: any) => {
-                if (!prev) return prev;
-                return {
-                  ...prev,
-                  opportunities: prev.opportunities.map((o: any) =>
-                    o.id === data.opportunity.id ? data.opportunity : o
-                  ),
-                };
-              });
-            }
-          })
-          .catch((e) => console.error("Failed building opportunity", e));
+        });
+        const data = await res.json();
+        if (data.opportunity) {
+          if (data.opportunity.imageUrl) {
+            saveImageToCache(data.opportunity.id, data.opportunity.imageUrl);
+          }
+          setSession((prev: any) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              opportunities: prev.opportunities.map((o: any) =>
+                o.id === data.opportunity.id ? data.opportunity : o
+              ),
+            };
+          });
+        }
+      } catch (e) {
+        console.error("Failed building opportunity sequentially", e);
       }
-    });
+    }
   };
 
   const fetchSession = async () => {
@@ -106,7 +211,12 @@ export default function App() {
       const res = await fetchApi("/api/session");
       const data = await res.json();
       if (data.session) {
-        setSession(data.session);
+        // Restore cached images from localStorage before setting session
+        const sessionWithImages = {
+          ...data.session,
+          opportunities: mergeImagesIntoOpportunities(data.session.opportunities || []),
+        };
+        setSession(sessionWithImages);
         setHasLiveKey(data.hasLiveKey);
 
         // Restore active opportunity and correct screen view based on database state
@@ -119,8 +229,8 @@ export default function App() {
           }
         } else if (data.session.opportunities && data.session.opportunities.length > 0) {
           navigate("/opportunities");
-          // Resume any builds that were interrupted (e.g. page reloaded mid-build)
-          triggerPendingBuilds(data.session.opportunities);
+          // Resume builds for cards still missing images (status "planned" after Firestore strip)
+          triggerPendingBuilds(sessionWithImages.opportunities);
         } else if (data.session.answers && data.session.answers.spark) {
           navigate("/interview");
         }
@@ -141,6 +251,7 @@ export default function App() {
     setSteerFocus("");
     setSteerVibe("");
     setSteerKeywords("");
+    hasUserSteeredRef.current = false;
 
     // Simulate mining live logs immediately so agent is "doing and showing work"!
     setMiningLogs([]);
@@ -221,6 +332,14 @@ export default function App() {
       const minedData = await resp.json();
       setSession((prev: any) => prev ? { ...prev, opportunities: minedData.opportunities } : null);
 
+      if (minedData.opportunities && Array.isArray(minedData.opportunities)) {
+        triggerPendingBuilds(minedData.opportunities);
+      }
+
+      if (!hasUserSteeredRef.current) {
+        navigate("/opportunities");
+      }
+
     } catch (err) {
       console.error("Failed saving answers", err);
     } finally {
@@ -231,6 +350,7 @@ export default function App() {
   // Send student message to Agent Chat helper
   const sendChatMessage = async (text: string) => {
     if (!text.trim()) return;
+    hasUserSteeredRef.current = true;
 
     const newStudentMsg = { sender: "student" as const, text };
     const updatedMessages = [...chatMessages, newStudentMsg];
@@ -448,9 +568,9 @@ export default function App() {
     setSession((prev: any) => prev ? { ...prev, activeProject: null } : null);
   };
 
-  const getSelectedOpp = (): Opportunity | undefined => {
-    if (!session || !activeOppId) return undefined;
-    return session.opportunities.find((o) => o.id === activeOppId);
+  const getSelectedOpp = (oppId = routedProjectId ?? activeOppId): Opportunity | undefined => {
+    if (!session || !oppId) return undefined;
+    return session.opportunities.find((o) => o.id === oppId);
   };
 
   return (
@@ -490,10 +610,11 @@ export default function App() {
             type Crumb = { label: string; path?: string };
             let crumbs: Crumb[] | null = null;
             if (path === "/interview") crumbs = [{ label: "Adventures", path: "/" }, { label: "Profile" }];
+            else if (path === "/profile") crumbs = [{ label: "Adventures", path: "/" }, { label: "Profile" }];
             else if (path === "/discover") crumbs = [{ label: "Profile", path: "/interview" }, { label: "Scouting" }];
             else if (path === "/opportunities") crumbs = [{ label: "Scouting", path: "/discover" }, { label: "Choose" }];
             else if (path.startsWith("/plan/")) crumbs = [{ label: "Choose", path: "/opportunities" }, { label: "Plan" }];
-            else if (path.startsWith("/project/")) crumbs = [{ label: "Plan", path: activeOppId ? `/plan/${activeOppId}` : "/opportunities" }, { label: "Building" }];
+            else if (path.startsWith("/project/")) crumbs = [{ label: "Plan", path: routedProjectId ? `/plan/${routedProjectId}` : "/opportunities" }, { label: "Building" }];
             else if (path === "/done") crumbs = [{ label: "Building" }, { label: "Done ✨" }];
             if (!crumbs) return null;
             return (
@@ -530,6 +651,13 @@ export default function App() {
                 {hasLiveKey ? "AI Guide Active" : "Practice Lab"}
               </span>
             </div>
+
+            <button
+              onClick={() => navigate("/profile")}
+              className="text-xs font-mono text-emerald-800 hover:text-emerald-950 hover:underline transition uppercase tracking-wider font-semibold"
+            >
+              Profile
+            </button>
 
             <button
               onClick={() => navigate("/reflect")}
@@ -604,7 +732,7 @@ export default function App() {
                       Scouting Your Adventures...
                     </h2>
                     <p className="text-xs text-slate-600 font-sans leading-relaxed">
-                      Our Antigravity Agent is mapping and compiling real web structures, code frameworks, and story coordinate layouts. Type or click presets below to steer the background scouting process in real-time!
+                      Atlas is already building your adventure list. Quick-steer is optional; if you do nothing, we will move forward as soon as scouting is ready.
                     </p>
                   </div>
 
@@ -759,15 +887,15 @@ export default function App() {
                       {/* Quick-Steer Chips */}
                       <div className="shrink-0 mb-3 text-left">
                         <span className="text-[9px] font-mono text-emerald-800/60 uppercase tracking-widest font-semibold block mb-1.5">
-                          💡 Quick-Steer Guidelines
+                          💡 Optional Quick-Steer
                         </span>
                         <div className="flex flex-wrap gap-1.5">
                           {[
-                            { label: "💻 Focus on Code", text: "I want to focus on software development and coding applications" },
-                            { label: "🗺️ Focus on Maps", text: "I want to focus on geospatial mapping and spatial analysis" },
-                            { label: "📣 Focus on Campaigns", text: "I want to focus on civic advocacy campaigns & policy design" },
-                            { label: "⚡ Quick & Light", text: "Keep it quick & light (under 20 minutes)" },
-                            { label: "🎓 Portfolio Piece", text: "Make it a prestigious portfolio piece" }
+                            { label: "💻 Code", text: "I want to focus on software development and coding applications" },
+                            { label: "🗺️ Maps", text: "I want to focus on geospatial mapping and spatial analysis" },
+                            { label: "📣 Campaigns", text: "I want to focus on civic advocacy campaigns & policy design" },
+                            { label: "⚡ Quick", text: "Keep it quick & light (under 20 minutes)" },
+                            { label: "🎓 Portfolio", text: "Make it a prestigious portfolio piece" }
                           ].map((chip) => {
                             const isSelectedFocus =
                                (chip.label.includes("Code") && steerFocus === "code") ||
@@ -834,7 +962,7 @@ export default function App() {
                       disabled={loading}
                       className="h-12 px-8 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white rounded-3xl text-sm font-display font-semibold shadow-lg shadow-emerald-500/25 active:scale-95 transition-all duration-150 inline-flex items-center gap-2 border border-emerald-400/30 cursor-pointer"
                     >
-                      <span>✨ Finish Scouting & View Adventures</span>
+                      <span>{loading ? "✨ Scouting Adventures..." : "✨ View Adventures"}</span>
                       <Sparkles className="w-4 h-4 animate-pulse" />
                     </button>
                   </div>
@@ -876,109 +1004,86 @@ export default function App() {
                     exit={{ opacity: 0, y: -10 }}
                     transition={{ duration: 0.2 }}
                   >
-                    {(!session.activeProject || session.activeProject.id !== activeOppId) ? (
-                      <div className="max-w-6xl mx-auto animate-fadeIn">
-                        {/* Skeleton Header */}
-                        <div className="mb-6 flex items-center justify-between">
-                          <div className="h-6 w-48 bg-emerald-800/10 rounded-lg animate-pulse" />
-                          <span className="h-6 w-36 bg-emerald-800/15 rounded-lg animate-pulse block" />
-                        </div>
-
-                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-                          {/* Left column skeleton (span 5) */}
-                          <div className="lg:col-span-5 bg-white/80 border border-orange-100/50 rounded-3xl p-6 sm:p-8 flex flex-col justify-between relative overflow-hidden backdrop-blur-md shadow-lg min-h-[500px]">
-                            <div className="space-y-6">
-                              {/* Image placeholder */}
-                              <div className="rounded-2xl aspect-[16/11] bg-slate-100/90 border border-orange-100/30 animate-pulse relative overflow-hidden flex items-center justify-center">
-                                <Sun className="w-10 h-10 text-emerald-800/20 animate-spin-slow" />
-                              </div>
-                              {/* Title & tags */}
-                              <div className="space-y-3">
-                                <div className="h-3 w-28 bg-amber-800/15 rounded animate-pulse" />
-                                <div className="h-6 w-3/4 bg-emerald-950/15 rounded-lg animate-pulse" />
-                                <div className="h-4 w-5/6 bg-slate-400/15 rounded animate-pulse" />
-                                <div className="h-4 w-2/3 bg-slate-400/15 rounded animate-pulse" />
-                              </div>
-                            </div>
-                            {/* Skills badges */}
-                            <div className="mt-8 pt-6 border-t border-orange-200/40 space-y-4">
-                              <div className="h-3 w-32 bg-emerald-900/15 rounded animate-pulse" />
-                              <div className="flex flex-wrap gap-2">
-                                <div className="h-7 w-24 bg-orange-100/30 rounded-xl animate-pulse" />
-                                <div className="h-7 w-28 bg-orange-100/30 rounded-xl animate-pulse" />
-                                <div className="h-7 w-20 bg-orange-100/30 rounded-xl animate-pulse" />
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Right column skeleton (span 7) */}
-                          <div className="lg:col-span-7 bg-white/70 border border-orange-100/40 rounded-3xl p-6 sm:p-9 flex flex-col justify-between backdrop-blur-md relative shadow-lg">
-                            <div className="space-y-8">
-                              {/* Title row */}
-                              <div className="flex items-start justify-between">
-                                <div className="space-y-2">
-                                  <div className="h-3.5 w-36 bg-emerald-800/15 rounded animate-pulse" />
-                                  <div className="h-8 w-64 bg-emerald-950/20 rounded-lg animate-pulse" />
-                                </div>
-                                <div className="h-8 w-28 bg-orange-100/40 rounded-xl animate-pulse" />
-                              </div>
-
-                              {/* Description */}
-                              <div className="h-4 w-5/6 bg-slate-400/15 rounded animate-pulse" />
-
-                              {/* Timeline steps skeleton */}
-                              <div className="space-y-6">
-                                {[1, 2, 3, 4].map((i) => (
-                                  <div key={i} className="flex gap-5 items-start">
-                                    <div className="w-8 h-8 rounded-full bg-emerald-50/50 border border-emerald-200/30 flex items-center justify-center text-[11px] font-mono text-emerald-800/30 animate-pulse font-bold">
-                                      {i}
-                                    </div>
-                                    <div className="flex-1 space-y-2 pt-1">
-                                      <div className="h-4 w-48 bg-emerald-950/15 rounded animate-pulse" />
-                                      <div className="h-3 w-11/12 bg-slate-400/15 rounded animate-pulse" />
-                                      <div className="h-3 w-5/6 bg-slate-400/15 rounded animate-pulse" />
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Confirmation bar skeleton */}
-                            <div className="border-t border-orange-200/40 pt-6 mt-8 flex flex-col sm:flex-row items-center justify-between gap-6">
-                              <div className="space-y-2">
-                                <div className="h-3 w-32 bg-emerald-800/15 rounded animate-pulse" />
-                                <div className="h-3 w-56 bg-slate-400/15 rounded animate-pulse" />
-                              </div>
-                              <div className="h-12 w-full sm:w-48 bg-emerald-500/25 rounded-xl animate-pulse" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
+                    {(!routedProjectId || !getSelectedOpp(routedProjectId)) ? null : (
                       <BlueprintPlan
-                        opportunity={getSelectedOpp()!}
-                        project={session.activeProject}
-                        onConfirmStart={async (selectedSteps) => {
-                          setLoading(true);
-                          try {
-                            const res = await fetchApi("/api/project/update-steps", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ steps: selectedSteps }),
+                        opportunity={getSelectedOpp(routedProjectId)!}
+                        project={(!session.activeProject || session.activeProject.id !== routedProjectId) ? null : session.activeProject}
+                        onUpdateProject={(updatedProject) => {
+                          setSession((prev: any) => {
+                            if (!prev) return prev;
+                            return {
+                              ...prev,
+                              activeProject: updatedProject
+                            };
+                          });
+                        }}
+                        onConfirmStart={(selectedSteps) => {
+                          // Optimistically update the session profile locally in React memory
+                          // so that the workspace and steps update and navigation happens instantly!
+                          setSession((prev: any) => {
+                            if (!prev || !prev.activeProject) return prev;
+
+                            const currentSteps = prev.activeProject.steps || [];
+                            const existingById = new Map(
+                              currentSteps.filter((step: any) => step.id).map((step: any) => [step.id, step])
+                            );
+
+                            const mergedSteps = selectedSteps.map((incoming: any, idx: number) => {
+                              const existing = incoming.id ? existingById.get(incoming.id) : currentSteps[idx];
+                              return {
+                                ...existing,
+                                ...incoming,
+                                tutorMessages: existing ? existing.tutorMessages ?? [] : incoming.tutorMessages ?? [],
+                              };
                             });
-                            const data = await res.json();
-                            if (data.success && data.project) {
-                              setSession((prev: any) => ({
-                                ...prev,
-                                activeProject: data.project
-                              }));
-                              navigate(`/project/${activeOppId}`);
+
+                            const previousActiveTaskId = prev.activeProject.steps[prev.activeProject.stepIndex]?.id;
+                            let newStepIndex = prev.activeProject.stepIndex;
+                            if (previousActiveTaskId) {
+                              const nextIndex = mergedSteps.findIndex((step: any) => step.id === previousActiveTaskId);
+                              if (nextIndex !== -1) {
+                                newStepIndex = nextIndex;
+                              }
                             }
-                          } catch (err) {
-                            console.error("Failed saving selected steps", err);
-                          } finally {
-                            setLoading(false);
-                          }
+                            if (newStepIndex >= mergedSteps.length) {
+                              newStepIndex = Math.max(0, mergedSteps.length - 1);
+                            }
+
+                            return {
+                              ...prev,
+                              activeProject: {
+                                ...prev.activeProject,
+                                steps: mergedSteps,
+                                stepIndex: newStepIndex,
+                                started: true,
+                              },
+                            };
+                          });
+
+                          // Navigate IMMEDIATELY
+                          navigate(`/project/${routedProjectId}`);
+
+                          // Fire the backend sync asynchronously in the background (non-blocking)
+                          fetchApi("/api/project/update-steps", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ steps: selectedSteps }),
+                          })
+                            .then(async (res) => {
+                              const data = await res.json();
+                              if (data.success && data.project) {
+                                setSession((prev: any) => {
+                                  if (!prev) return prev;
+                                  return {
+                                    ...prev,
+                                    activeProject: data.project,
+                                  };
+                                });
+                              }
+                            })
+                            .catch((err) => {
+                              console.error("Background steps sync failed:", err);
+                            });
                         }}
                         onBack={handleDeselectOpportunity}
                       />
@@ -991,32 +1096,26 @@ export default function App() {
             <Route
               path="/project/:oppId"
               element={
-                session && session.activeProject ? (
-                  <motion.div
-                    key="project"
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                  >
-                    <ProjectWorkbox
-                      project={session.activeProject}
-                      opportunity={getSelectedOpp()!}
-                      onApproveStep={handleApproveStep}
-                      isApproving={isApproving}
-                      onBack={handleBackToMenu}
-                      onUpdateProject={(updatedProject) => {
-                        setSession((prev: any) => {
-                          if (!prev) return prev;
-                          return {
-                            ...prev,
-                            activeProject: updatedProject
-                          };
-                        });
-                      }}
-                    />
-                  </motion.div>
-                ) : null
+                <motion.div
+                  key="project"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <ProjectRoute
+                    session={session}
+                    onApproveStep={handleApproveStep}
+                    isApproving={isApproving}
+                    onBack={handleBackToMenu}
+                    onUpdateProject={(updatedProject) => {
+                      setSession((prev: any) => {
+                        if (!prev) return prev;
+                        return { ...prev, activeProject: updatedProject };
+                      });
+                    }}
+                  />
+                </motion.div>
               }
             />
 
@@ -1057,6 +1156,26 @@ export default function App() {
                       opportunity={getSelectedOpp()}
                       answers={session.answers}
                       onNextAdventure={() => navigate("/opportunities")}
+                      onRestart={handleRestart}
+                    />
+                  </motion.div>
+                ) : null
+              }
+            />
+
+            <Route
+              path="/profile"
+              element={
+                session ? (
+                  <motion.div
+                    key="profile"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <Profile
+                      session={session}
                       onRestart={handleRestart}
                     />
                   </motion.div>
