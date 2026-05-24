@@ -772,16 +772,6 @@ export default function ProjectWorkbox({
         >
           📋 Agile Sprint Board (Kanban)
         </button>
-        <button
-          onClick={() => setActiveTab("quest")}
-          className={`h-10 px-5 rounded-2xl text-xs font-display font-bold border cursor-pointer transition-all duration-200 active:scale-98 ${
-            activeTab === "quest"
-              ? "bg-emerald-500 text-white border-emerald-400 shadow-md shadow-emerald-500/10"
-              : "bg-white text-emerald-950 border-orange-100/45 hover:border-emerald-300"
-          }`}
-        >
-          🗺️ Story Quest Map & Console
-        </button>
         {isCompletedProject && (
           <button
             onClick={() => window.location.href = "/reflect"}
