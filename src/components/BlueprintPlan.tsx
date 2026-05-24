@@ -10,7 +10,7 @@ interface BlueprintPlanProps {
   project: ActiveProject | null;
   onConfirmStart: (selectedSteps: any[]) => void;
   onBack: () => void;
-  onUpdateProject: (updatedProject: ActiveProject) => void;
+  onUpdateProject: (updatedProject: any) => void;
 }
 
 export default function BlueprintPlan({
