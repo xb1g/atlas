@@ -179,7 +179,9 @@ function preserveCurrentStep(project: ActiveProjectData, previousActiveTaskId?: 
     }
   }
 
-  if (project.stepIndex >= project.steps.length) {
+  // stepIndex === steps.length is the valid "all completed" sentinel.
+  // Only clamp if it has overshot past the sentinel value.
+  if (project.stepIndex > project.steps.length) {
     project.stepIndex = Math.max(0, project.steps.length - 1);
   }
 }
@@ -2333,4 +2335,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+
