@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { ArrowRight, Sparkles, Zap, RefreshCw, Compass, MapPin } from "lucide-react";
+import { ArrowRight, Sparkles, Zap, RefreshCw, Compass, MapPin, Loader } from "lucide-react";
 import { Opportunity, InterviewAnswers } from "../types";
 
 interface ReflectionProps {
@@ -102,6 +102,8 @@ export default function Reflection({ opportunity, answers, onNextAdventure, onRe
   const [q1, setQ1] = useState<string | null>(null);
   const [q2, setSurprise] = useState("");
   const [q3, setQ3] = useState<string | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<string>("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const archetype = q1 ? archetypes[q1 as keyof typeof archetypes] : null;
 
@@ -241,12 +243,42 @@ export default function Reflection({ opportunity, answers, onNextAdventure, onRe
                 ← Back
               </button>
               <button
-                onClick={() => setStep(3)}
-                disabled={!q3}
+                onClick={async () => {
+                  if (!q3) return;
+                  setIsAnalyzing(true);
+                  try {
+                    const sessionId = localStorage.getItem("atlas_session_id") || "session-maya";
+                    const res = await fetch("/api/project/reflect", {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        "x-session-id": sessionId,
+                      },
+                      body: JSON.stringify({ q1, q2, q3 }),
+                    });
+                    const data = await res.json();
+                    if (data.analysis) setAiAnalysis(data.analysis);
+                  } catch (err) {
+                    console.error("Reflection analysis failed:", err);
+                  } finally {
+                    setIsAnalyzing(false);
+                    setStep(3);
+                  }
+                }}
+                disabled={!q3 || isAnalyzing}
                 className="flex-1 h-12 rounded-2xl font-sans font-bold text-sm uppercase tracking-widest flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg transition-all hover:-translate-y-0.5 active:translate-y-0 cursor-pointer disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed disabled:translate-y-0 disabled:shadow-none"
               >
-                <span>See My Reflection</span>
-                <Sparkles className="w-4 h-4" />
+                {isAnalyzing ? (
+                  <>
+                    <Loader className="w-4 h-4 animate-spin" />
+                    <span>Reading your journey...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>See My Reflection</span>
+                    <Sparkles className="w-4 h-4" />
+                  </>
+                )}
               </button>
             </div>
 
@@ -301,6 +333,22 @@ export default function Reflection({ opportunity, answers, onNextAdventure, onRe
                 {archetype.tagline}
               </motion.p>
             </motion.div>
+
+            {/* AI Analysis from Antigravity Agent */}
+            {aiAnalysis && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.48 }}
+                className="bg-emerald-50/90 border border-emerald-200/60 rounded-3xl p-6 mb-4 shadow-sm"
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <Sparkles className="w-4 h-4 text-emerald-600" />
+                  <span className="text-[10px] font-mono font-extrabold uppercase tracking-widest text-emerald-800/70">What the Agent Saw in Your Journey</span>
+                </div>
+                <p className="text-sm font-sans text-emerald-900 leading-relaxed whitespace-pre-wrap">{aiAnalysis}</p>
+              </motion.div>
+            )}
 
             {/* Reveal text */}
             <motion.div

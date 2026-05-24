@@ -32,6 +32,78 @@ function getGeminiClient(): GoogleGenAI | null {
   return devGeminiClient;
 }
 
+/**
+ * Antigravity Agent Helper
+ * Wraps the Gemini Interactions API for the antigravity-preview-05-2026 agent.
+ * Falls back gracefully to regular Gemini if the agent is not available.
+ */
+async function antigravityRun(
+  client: GoogleGenAI,
+  prompt: string,
+  options?: {
+    stream?: false;
+    timeout?: number;
+    tools?: Array<{ type: string }>;
+    previousInteractionId?: string;
+  }
+): Promise<{ text: string; raw: any; id: string }>;
+async function antigravityRun(
+  client: GoogleGenAI,
+  prompt: string,
+  options: {
+    stream: true;
+    timeout?: number;
+    tools?: Array<{ type: string }>;
+    previousInteractionId?: string;
+  }
+): Promise<{ stream: AsyncIterable<any>; raw: any; id: string }>;
+async function antigravityRun(
+  client: GoogleGenAI,
+  prompt: string,
+  options?: {
+    stream?: boolean;
+    timeout?: number;
+    tools?: Array<{ type: string }>;
+    previousInteractionId?: string;
+  }
+): Promise<any> {
+  try {
+    const createParams: any = {
+      agent: "antigravity-preview-05-2026",
+      input: prompt,
+      environment: "remote",
+      store: true,
+    };
+    if (options?.tools) createParams.tools = options.tools;
+    if (options?.stream) createParams.stream = true;
+    if (options?.previousInteractionId) createParams.previous_interaction_id = options.previousInteractionId;
+
+    const interaction = await (client as any).interactions.create(createParams);
+
+    if (options?.stream) {
+      return { stream: interaction, raw: interaction, id: interaction.id };
+    }
+
+    let result = interaction;
+    if (result.status && result.status !== "completed") {
+      const maxPolls = 30;
+      for (let i = 0; i < maxPolls; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        result = await (client as any).interactions.get(result.id);
+        if (result.status === "completed" || result.status === "failed" || result.status === "cancelled") {
+          break;
+        }
+      }
+    }
+
+    const text = result.output_text || result.outputText || "";
+    return { text, raw: result, id: result.id };
+  } catch (err: any) {
+    console.error("Antigravity agent call failed:", err.message || err);
+    throw err;
+  }
+}
+
 // -------------------------------------------------------------
 // In-Memory Database / Sandbox state per Demo session
 // -------------------------------------------------------------
@@ -64,6 +136,7 @@ interface SessionProfile {
       custom?: boolean;
       notes?: string;
       tutorMessages?: { sender: "student" | "agent"; text: string }[];
+      tutorInteractionId?: string;
       priority?: "low" | "medium" | "high";
       payload?: {
         consoleLogs?: string[];
@@ -75,7 +148,10 @@ interface SessionProfile {
       };
     }[];
     coFounderMessages?: { sender: "student" | "agent"; text: string }[];
+    coFounderInteractionId?: string;
   } | null;
+  chatInteractionId?: string;
+  reflectionInteractionId?: string;
 }
 
 type ProjectStepData = NonNullable<SessionProfile["activeProject"]>["steps"][number];
@@ -942,19 +1018,30 @@ How to help:
 - Talk like a thoughtful mentor, not a pitch deck. No jargon. No corporate energy.
 - Do NOT suggest specific project ideas yet — your job is to gather what they want, not decide for them.`;
 
-    const chat = client.chats.create({
-      model: "gemini-3.5-flash",
-      history: chatHistory.slice(0, -1),
-      config: {
-        systemInstruction,
-      }
-    });
+    // Try Antigravity agent first with server-side conversation history
+    let reply = "";
+    try {
+      const agPrompt = `${systemInstruction}\n\nRespond to the student.`;
+      const agResult = await antigravityRun(client, agPrompt, {
+        previousInteractionId: session.chatInteractionId,
+      });
+      reply = agResult.text;
+      session.chatInteractionId = agResult.id;
+      await saveSession(session);
+    } catch (agErr) {
+      console.log("Antigravity chat fallback to Gemini:", (agErr as Error).message);
+      const chat = client.chats.create({
+        model: "gemini-3.5-flash",
+        history: chatHistory.slice(0, -1),
+        config: { systemInstruction }
+      });
+      const response = await chat.sendMessage({ message: lastStudentMsg });
+      reply = response.text || "";
+    }
 
-    const response = await chat.sendMessage({
-      message: lastStudentMsg,
-    });
-
-    const reply = response.text || `That sounds amazing, ${answers.name}! Let's make sure that's exactly what we scout.`;
+    if (!reply) {
+      reply = `That sounds amazing, ${answers.name}! Let's make sure that's exactly what we scout.`;
+    }
     return res.json({ reply });
   } catch (error: any) {
     console.error("Chat generation failed:", error);
@@ -1360,6 +1447,11 @@ app.post("/api/project/select", async (req, res) => {
   const n = session.answers.name || "Maya";
   const age = session.answers.age || 16;
   const grade = session.answers.grade || "Grade 11";
+
+  // If the selected project matches the already active project, return it directly to preserve tutor/chat history
+  if (session.activeProject && session.activeProject.id === opportunityId) {
+    return res.json({ success: true, project: session.activeProject });
+  }
   
   // Find opportunity
   let opportunity = (session.opportunities || []).find((o) => o.id === opportunityId);
@@ -1759,21 +1851,31 @@ Your job:
 - Use short bullets or starter code only when useful.
 - Keep the response under 160 words.`;
 
-      const responseStream = await client.models.generateContentStream({
-        model: "gemini-3.5-flash",
-        contents: [
-          ...recentHistory,
-          { role: "user", parts: [{ text: cleanMessage }] }
-        ],
-        config: {
-          systemInstruction,
-        }
-      });
+      // Try Antigravity agent first with per-task conversation history
+      try {
+        const agPrompt = `${systemInstruction}\n\nStudent asks: ${cleanMessage}\n\nProvide a helpful, practical response.`;
+        const agResult = await antigravityRun(client, agPrompt, {
+          previousInteractionId: task.tutorInteractionId,
+        });
+        finalReply = agResult.text;
+        res.write(`data: ${JSON.stringify({ type: "chunk", text: finalReply })}\n\n`);
+        task.tutorInteractionId = agResult.id;
+      } catch (agErr) {
+        console.log("Antigravity tutor fallback to Gemini:", (agErr as Error).message);
+        const responseStream = await client.models.generateContentStream({
+          model: "gemini-3.5-flash",
+          contents: [
+            ...recentHistory,
+            { role: "user", parts: [{ text: cleanMessage }] }
+          ],
+          config: { systemInstruction }
+        });
 
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          finalReply += chunk.text;
-          res.write(`data: ${JSON.stringify({ type: "chunk", text: chunk.text })}\n\n`);
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            finalReply += chunk.text;
+            res.write(`data: ${JSON.stringify({ type: "chunk", text: chunk.text })}\n\n`);
+          }
         }
       }
     } catch (error) {
@@ -1921,10 +2023,11 @@ app.post("/api/project/chat-to-edit", async (req, res) => {
       reply = makePracticeCoFounderReply(message, session, project, opportunity);
     }
 
-    project.steps = updatedSteps;
+    const stepsChanged = JSON.stringify(project.steps) !== JSON.stringify(updatedSteps);
+    if (stepsChanged) project.steps = updatedSteps;
     project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
     await saveSession(session);
-    return res.json({ reply, project });
+    return res.json({ reply, updated: stepsChanged, ...(stepsChanged ? { project } : {}) });
   }
 
   // Live Gemini mode
@@ -1960,75 +2063,109 @@ If you want to update the steps, you MUST output your conversational reply first
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
-    const chatHistory = (messages || []).slice(-8).map((m: any) => {
-      const role = (m.sender === "student" || m.sender === "user") ? "user" : "model";
-      return { role, parts: [{ text: m.text }] };
-    });
-
-    const responseStream = await client.models.generateContentStream({
-      model: "gemini-3.5-flash",
-      contents: [
-        ...chatHistory,
-        { role: "user", parts: [{ text: `The student says: "${message}"` }] }
-      ],
-      config: {
-        systemInstruction,
-      }
-    });
-
-    let fullText = "";
-    let streamedText = "";
-    let isJsonBlockStarted = false;
-
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        fullText += chunk.text;
-        
-        if (!isJsonBlockStarted && fullText.includes("```json")) {
-          isJsonBlockStarted = true;
-          // Send whatever text was before the json block
-          const beforeJson = fullText.split("```json")[0];
-          const newToStream = beforeJson.substring(streamedText.length);
-          if (newToStream) {
-            streamedText += newToStream;
-            res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
-          }
-        } else if (!isJsonBlockStarted) {
-          const newToStream = chunk.text;
-          streamedText += newToStream;
-          res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
-        }
-      }
-    }
-
-    let reply = streamedText.trim();
+    // Try Antigravity agent first for plan mutation with real research
+    let reply = "";
     let data: any = {};
+    let usedAntigravity = false;
+    try {
+      const agPrompt = `${systemInstruction}\n\n${messages.map(m => `${m.sender === "student" ? "Student" : "Co-Founder"}: ${m.text}`).join("\n")}\n\nStudent says: "${message}"\n\nRespond.`;
+      const agResult = await antigravityRun(client, agPrompt, {
+        previousInteractionId: project.coFounderInteractionId,
+      });
+      const fullText = agResult.text;
+      usedAntigravity = true;
+      project.coFounderInteractionId = agResult.id;
 
-    if (isJsonBlockStarted) {
+      // Parse JSON block if present
       const jsonMatch = fullText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
       if (jsonMatch && jsonMatch[1]) {
         try {
           data = JSON.parse(jsonMatch[1]);
         } catch (e) {
-          console.error("Failed to parse JSON block from Co-Founder", e);
+          console.error("Failed to parse JSON from Antigravity Co-Founder", e);
         }
       }
+      // Remove JSON block from reply
+      reply = fullText.replace(/```json\s*\{[\s\S]*?\}\s*```/, "").trim();
+      if (!reply) reply = "Awesome work! Let's keep building.";
+
+      // Stream to client (single chunk since Antigravity is non-streaming)
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+      res.write(`data: ${JSON.stringify({ type: "chunk", text: reply })}\n\n`);
+    } catch (agErr) {
+      console.log("Antigravity co-founder fallback to Gemini:", (agErr as Error).message);
+
+      // Fallback to Gemini streaming
+      const chatHistory = (messages || []).slice(-8).map((m: any) => {
+        const role = (m.sender === "student" || m.sender === "user") ? "user" : "model";
+        return { role, parts: [{ text: m.text }] };
+      });
+
+      const responseStream = await client.models.generateContentStream({
+        model: "gemini-3.5-flash",
+        contents: [
+          ...chatHistory,
+          { role: "user", parts: [{ text: `The student says: "${message}"` }] }
+        ],
+        config: { systemInstruction }
+      });
+
+      let fullText = "";
+      let streamedText = "";
+      let isJsonBlockStarted = false;
+
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          fullText += chunk.text;
+          if (!isJsonBlockStarted && fullText.includes("```json")) {
+            isJsonBlockStarted = true;
+            const beforeJson = fullText.split("```json")[0];
+            const newToStream = beforeJson.substring(streamedText.length);
+            if (newToStream) {
+              streamedText += newToStream;
+              res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
+            }
+          } else if (!isJsonBlockStarted) {
+            const newToStream = chunk.text;
+            streamedText += newToStream;
+            res.write(`data: ${JSON.stringify({ type: "chunk", text: newToStream })}\n\n`);
+          }
+        }
+      }
+
+      reply = streamedText.trim();
+
+      if (isJsonBlockStarted) {
+        const jsonMatch = fullText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
+        if (jsonMatch && jsonMatch[1]) {
+          try {
+            data = JSON.parse(jsonMatch[1]);
+          } catch (e) {
+            console.error("Failed to parse JSON block from Co-Founder", e);
+          }
+        }
+      }
+      if (!reply) reply = "Awesome work! Let's keep building.";
     }
 
-    if (!reply) {
-      reply = "Awesome work! Let's keep building.";
-    }
-
+    let stepsChanged = false;
     if (data.updatedSteps && Array.isArray(data.updatedSteps)) {
       const previousActiveTaskId = project.steps[project.stepIndex]?.id;
-      project.steps = mergeIncomingSteps(project.steps, data.updatedSteps);
-      preserveCurrentStep(project, previousActiveTaskId);
+      const mergedSteps = mergeIncomingSteps(project.steps, data.updatedSteps);
+      if (JSON.stringify(mergedSteps) !== JSON.stringify(project.steps)) {
+        project.steps = mergedSteps;
+        preserveCurrentStep(project, previousActiveTaskId);
+        stepsChanged = true;
+      }
     }
 
     project.coFounderMessages = [...(messages || []), { sender: "agent", text: reply }];
     await saveSession(session);
-    
-    res.write(`data: ${JSON.stringify({ type: "done", project, reply })}\n\n`);
+
+    res.write(`data: ${JSON.stringify({ type: "done", reply, updated: stepsChanged, ...(stepsChanged ? { project } : {}) })}\n\n`);
     res.end();
 
   } catch (error: any) {
@@ -2083,6 +2220,96 @@ app.post("/api/project/approve-step", async (req, res) => {
 
   await saveSession(session);
   res.json({ success: true, project });
+});
+
+// 4.6 API: Reflection — AI-powered archetype analysis with full project context
+app.post("/api/project/reflect", async (req, res) => {
+  const sessionId = req.headers["x-session-id"] as string || "session-maya";
+  const session = await getSession(sessionId);
+  const client = getGeminiClient();
+
+  if (!session || !session.activeProject) {
+    return res.status(400).json({ error: "No active project found" });
+  }
+
+  const { q1, q2, q3 } = req.body;
+  const project = session.activeProject;
+  const opportunity = (session.opportunities || []).find(o => o.id === project.id) || { title: "Custom Project" };
+
+  const completedSteps = project.steps.filter(s => s.status === "completed");
+  const notesWithContent = project.steps.filter(s => s.notes && s.notes.trim().length > 0);
+  const notesSummary = notesWithContent.map(s => `- ${s.title}: ${s.notes}`).join("\n");
+
+  const archetypeMap: Record<string, string> = {
+    builder: "building tools and interactive things",
+    talker: "storytelling, persuading people, and spreading ideas",
+    organizer: "planning, coordinating, and making things actually happen",
+    tastemaker: "design, aesthetics, and making things feel right",
+    investigator: "researching, asking questions, and finding truth",
+  };
+
+  const chosenArchetype = archetypeMap[q1] || "a mix of approaches";
+  const nextDirection = q3 === "deeper" ? "go deeper into this same topic" : q3 === "different" ? "try a different kind of project on the same cause" : "explore a completely new cause";
+
+  const reflectionPrompt = `
+You are the Atlas Reflection Analyst. You've watched ${session.answers.name || "this student"} complete their entire project journey.
+
+PROJECT CONTEXT:
+- Title: "${opportunity.title}"
+- Description: ${opportunity.summary || opportunity.whyMatch || ""}
+- What they care about: "${session.answers.spark || ""}"
+- How they said they like to work: "${session.answers.medium || ""}"
+
+WHAT THEY ACTUALLY DID (from project diary):
+${notesSummary || "They completed the project but didn't write detailed diary notes."}
+
+Completed steps: ${completedSteps.length}/${project.steps.length}
+Step titles completed: ${completedSteps.map(s => s.title).join(", ")}
+
+THEIR REFLECTION ANSWERS:
+- What felt most natural: "${chosenArchetype}" (archetype: ${q1})
+- Surprise observation: "${q2 || "(no answer given)"}"
+- Where they want to go next: "${nextDirection}"
+
+YOUR JOB:
+Write a warm, personal reflection that:
+1. Acknowledges what they actually accomplished (reference specific steps/notes)
+2. Connects their chosen archetype to their real project behavior
+3. Addresses their surprise observation if they gave one
+4. Suggests one specific next move based on their "where next" choice
+5. Keeps it under 200 words. No bullet points. Sound like a thoughtful mentor texting.
+6. If they chose "deeper", suggest how to build on this project. If "different", suggest a new format for the same cause. If "new", suggest a related cause area.
+
+Do NOT use generic phrases like "Great job!" or "You did amazing!". Be specific about what they made.`;
+
+  let analysis = "";
+
+  if (!client) {
+    analysis = `You completed ${completedSteps.length} steps on "${opportunity.title}". You said ${chosenArchetype} felt most natural${q2 ? `, and noticed: "${q2}"` : ""}. For your next move: ${nextDirection}.`;
+    return res.json({ analysis });
+  }
+
+  try {
+    const agResult = await antigravityRun(client, reflectionPrompt, {
+      previousInteractionId: session.reflectionInteractionId,
+    });
+    analysis = agResult.text;
+    session.reflectionInteractionId = agResult.id;
+    await saveSession(session);
+  } catch (agErr) {
+    console.log("Antigravity reflection fallback:", (agErr as Error).message);
+    try {
+      const response = await client.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: reflectionPrompt,
+      });
+      analysis = response.text || "";
+    } catch (geminiErr) {
+      analysis = `You completed ${completedSteps.length} steps on "${opportunity.title}". You said ${chosenArchetype} felt most natural${q2 ? `, and noticed: "${q2}"` : ""}. For your next move: ${nextDirection}.`;
+    }
+  }
+
+  res.json({ analysis });
 });
 
 // Vite server setup logic

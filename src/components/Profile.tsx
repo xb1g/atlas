@@ -130,13 +130,13 @@ export default function Profile({ session, onRestart }: { session: SessionProfil
                     <div className="mb-4">
                       <div className="flex items-center justify-between text-[10px] font-mono text-emerald-800 mb-1.5 uppercase font-bold">
                         <span>Project Progress</span>
-                        <span>{Math.round((activeProject.stepIndex / (activeProject.steps.length || 1)) * 100)}%</span>
+                        <span>{Math.round((activeProject.steps.filter(s => s.status === "completed").length / (activeProject.steps.length || 1)) * 100)}%</span>
                       </div>
                       <div className="h-2 bg-emerald-100/50 rounded-full overflow-hidden border border-emerald-200/30">
                         <motion.div 
                           className="h-full bg-emerald-500 rounded-full"
                           initial={{ width: 0 }}
-                          animate={{ width: `${(activeProject.stepIndex / (activeProject.steps.length || 1)) * 100}%` }}
+                          animate={{ width: `${(activeProject.steps.filter(s => s.status === "completed").length / (activeProject.steps.length || 1)) * 100}%` }}
                           transition={{ duration: 1, ease: "easeOut" }}
                         />
                       </div>

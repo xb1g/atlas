@@ -28,6 +28,13 @@ export default function ProjectWorkbox({
 }: ProjectWorkboxProps) {
   const currentStepIndex = project.stepIndex;
   
+  console.log("DEBUG: ProjectWorkbox render", {
+    projectId: project.id,
+    stepsCount: project.steps?.length,
+    steps: project.steps,
+    coFounderMessages: project.coFounderMessages
+  });
+  
   // Dashboard view tabs: "quest" (simulated story quest/terminal) or "board" (Agile PM Scrum/Kanban)
   const [activeTab, setActiveTab] = useState<"quest" | "board">("board");
 
@@ -68,6 +75,13 @@ export default function ProjectWorkbox({
   const selectedTask = selectedTaskId
     ? project.steps.find((step) => step.id === selectedTaskId) ?? null
     : null;
+
+  console.log("DEBUG: resolved selectedTask", {
+    selectedTaskId,
+    found: !!selectedTask,
+    title: selectedTask?.title,
+    tutorMessages: selectedTask?.tutorMessages
+  });
 
   // Auto-scroll chat to bottom
   useEffect(() => {
@@ -474,7 +488,7 @@ export default function ProjectWorkbox({
                   return newMsgs;
                 });
               } else if (data.type === "done") {
-                if (data.project && data.project.steps) {
+                if (data.updated && data.project) {
                   onUpdateProject(data.project);
                   playNotificationChime();
                   triggerConfetti();
@@ -745,6 +759,35 @@ export default function ProjectWorkbox({
           </div>
         </div>
       </div>
+
+      {/* Completed Project — Reflection CTA (always visible above tabs) */}
+      {isCompletedProject && (
+        <div className="bg-gradient-to-br from-amber-50/90 to-emerald-50/90 border border-emerald-300/40 rounded-3xl p-5 mb-6 shadow-lg relative overflow-hidden backdrop-blur-md text-center">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-200/20 rounded-full blur-2xl pointer-events-none" />
+          <div className="absolute bottom-0 left-0 w-24 h-24 bg-amber-200/20 rounded-full blur-2xl pointer-events-none" />
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: "spring", duration: 0.5 }}
+            className="flex flex-col sm:flex-row items-center justify-center gap-4"
+          >
+            <div className="text-center sm:text-left">
+              <span className="text-2xl mb-1 block">🎉</span>
+              <h2 className="text-base font-display font-bold text-emerald-950">All Steps Complete!</h2>
+              <p className="text-xs font-sans text-slate-600 max-w-xs">
+                You finished <strong>"{opportunity.title}"</strong>. Reflect on what you built.
+              </p>
+            </div>
+            <button
+              onClick={() => window.location.href = "/reflect"}
+              className="h-10 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-sans font-bold text-xs uppercase tracking-widest shadow-lg hover:-translate-y-0.5 active:translate-y-0 transition-all inline-flex items-center gap-2 cursor-pointer shrink-0"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span>Reflect on My Journey</span>
+            </button>
+          </motion.div>
+        </div>
+      )}
 
       {/* 3. Screen Switcher: Tab Buttons */}
       <div className="flex gap-1.5 mb-6 justify-start shrink-0">
